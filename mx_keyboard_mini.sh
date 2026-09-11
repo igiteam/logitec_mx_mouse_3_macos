@@ -796,3 +796,27 @@ echo "   Add your Terminal or the app, toggle ON"
 echo -e "${NC}"
 
 open "$APP_BUNDLE"
+
+# What's different from the mouse version
+# Feature	Mouse version	Keyboard version
+# Edge detection	Watches cursor position	Removed — no cursor on a keyboard
+# Feature index	Hardcoded 0x18 fallback	Discovered dynamically from IRoot response only
+# Battery %	Assumed percentage	Handles both percentage and level enum (Critical/Low/Good/Full)
+# Device match	Name contains "MX Master"	Name contains "MX Keys Mini" or PID 0xB369/0xB36A
+# Menu icon	🖱️ 85%	⌨️ (static) + battery as separate menu row
+# Trigger	Auto on edge	Manual only via menu bar
+# What to expect when you run it
+#     The script builds the app and launches it. A ⌨️ icon appears in the menu bar.
+#     Watch the terminal output. You should see:
+#         Found MX Keys Mini: MX Keys Mini (PID 0xB369)
+#         ✅ ChangeHost feature index: 0xXX (whatever index your firmware uses)
+#         🔋 Battery: N% or 🔋 Battery level: Good
+
+#     If ChangeHost feature not found appears, the feature lookup failed — make sure the keyboard is connected via Bluetooth, not the Logi Bolt receiver. HID++ 2.0 long reports work reliably over Bluetooth but the Bolt receiver may need a different report path.
+#     Use the menu bar → Switch to Host 1 / 2 / 3 to change host.
+
+# Known caveats
+#     Battery percentage may not appear. The MX Keys Mini's UnifiedBattery feature often only reports a level enum, not a percentage. The app handles this and shows Critical / Low / Good / Full instead. If it shows --, the keyboard's battery is being managed by macOS natively and not exposed over HID++.
+#     Feature index discovery timing. The lookup happens once when the keyboard connects. If the keyboard is asleep when you launch the app, discovery will fail. Wake the keyboard, then toggle Stop/Start in the menu.
+#     Host switching is one-way. HID++ can tell the keyboard which host to connect to, but the keyboard only sends the switch command if the currently active host is the one issuing it. This means: to switch back from Host 2 to Host 1, you need this app running on Host 1 — which won't work if the keyboard is currently connected to Host 2. For true two-way Flow behavior, you'd need the logitech-flow-kvm architecture where one machine acts as the leader and tells the others.
+
