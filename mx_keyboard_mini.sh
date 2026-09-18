@@ -30,7 +30,7 @@ cd "$APP_NAME" || exit
 # ===============================================
 echo -e "${CYAN}🎨 Downloading keyboard icon...${NC}"
 
-ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/main/logitec-mx-keys-mini.png"
+ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/refs/heads/main/logitec-mx-keys-mini.png"
 
 echo "📥 Downloading icon from: $ICON_URL"
 curl -s -L "$ICON_URL" -o "public/app_icon.png"
@@ -48,11 +48,8 @@ if [ -f "public/app_icon.png" ] && [ -s "public/app_icon.png" ]; then
     done
 
     if command -v iconutil &> /dev/null; then
-        iconutil -c icns "$ICONSET_DIR" -o "public/app_icon.icns" || {
-            echo "⚠ iconutil failed, falling back to PNG"
-            cp "public/app_icon.png" "public/app_icon.icns"
-        }
-        echo "✅ Created .icns file (or fallback)"
+        iconutil -c icns "$ICONSET_DIR" -o "public/app_icon.icns" 2>/dev/null
+        echo "✅ Created .icns file"
     else
         cp "public/app_icon.png" "public/app_icon.icns"
     fi
