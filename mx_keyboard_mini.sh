@@ -30,30 +30,34 @@ cd "$APP_NAME" || exit
 # ===============================================
 echo -e "${CYAN}🎨 Downloading keyboard icon...${NC}"
 
-ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/refs/heads/main/logitec-mx-keys-mini.png"
+ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/main/logitec-mx-keys-mini.png"
+
 
 echo "📥 Downloading icon from: $ICON_URL"
 curl -s -L "$ICON_URL" -o "public/app_icon.png"
 
 if [ -f "public/app_icon.png" ] && [ -s "public/app_icon.png" ]; then
     echo "✅ Icon downloaded successfully!"
-
+    
     ICONSET_DIR="public/AppIcon.iconset"
     mkdir -p "$ICONSET_DIR"
-
+    
     for SIZE in 16 32 64 128 256 512 1024; do
         sips -z $SIZE $SIZE "public/app_icon.png" --out "$ICONSET_DIR/icon_${SIZE}x${SIZE}.png" 2>/dev/null || true
         RETINA=$((SIZE * 2))
         sips -z $RETINA $RETINA "public/app_icon.png" --out "$ICONSET_DIR/icon_${SIZE}x${SIZE}@2x.png" 2>/dev/null || true
     done
-
+    
     if command -v iconutil &> /dev/null; then
-        iconutil -c icns "$ICONSET_DIR" -o "public/app_icon.icns" 2>/dev/null
-        echo "✅ Created .icns file"
+        iconutil -c icns "$ICONSET_DIR" -o "public/app_icon.icns" || {
+            echo "⚠ iconutil failed, falling back to PNG"
+            cp "public/app_icon.png" "public/app_icon.icns"
+        }
+        echo "✅ Created .icns file (or fallback)"
     else
         cp "public/app_icon.png" "public/app_icon.icns"
     fi
-
+    
     rm -rf "$ICONSET_DIR"
 else
     echo "⚠ Download failed, creating fallback icon"
