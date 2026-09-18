@@ -48,8 +48,11 @@ if [ -f "public/app_icon.png" ] && [ -s "public/app_icon.png" ]; then
     done
     
     if command -v iconutil &> /dev/null; then
-        iconutil -c icns "$ICONSET_DIR" -o "public/app_icon.icns" 2>/dev/null
-        echo "✅ Created .icns file"
+        iconutil -c icns "$ICONSET_DIR" -o "public/app_icon.icns" || {
+            echo "⚠ iconutil failed, falling back to PNG"
+            cp "public/app_icon.png" "public/app_icon.icns"
+        }
+        echo "✅ Created .icns file (or fallback)"
     else
         cp "public/app_icon.png" "public/app_icon.icns"
     fi
