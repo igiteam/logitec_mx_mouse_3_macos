@@ -30,7 +30,7 @@ cd "$APP_NAME" || exit
 # ===============================================
 echo -e "${CYAN}🎨 Downloading MX Master icon...${NC}"
 
-ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/main/logitec-mouse-mx-3.png"
+ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/main/logitec-mx-keys-mini.png"
 
 echo "📥 Downloading icon from: $ICON_URL"
 curl -s -L "$ICON_URL" -o "public/app_icon.png"
