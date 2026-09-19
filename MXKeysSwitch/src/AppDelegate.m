@@ -17,7 +17,7 @@
     self.isActive = NO;
 
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
-    self.statusItem.button.title = @"⌨️";
+    self.statusItem.button.title = @"⌨️ --%";
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(updateDisplay)
@@ -107,11 +107,11 @@
 
 - (void)updateDisplay {
     if (self.keysManager.deviceConnected) {
-        self.statusItem.button.title = @"⌨️";
+        self.statusItem.button.title = @"⌨️ --%";
         self.deviceMenuItem.title = [NSString stringWithFormat:@"Device: %@", self.keysManager.deviceName];
         self.batteryMenuItem.title = [NSString stringWithFormat:@"Battery: %@", self.keysManager.batteryLevelString];
     } else {
-        self.statusItem.button.title = @"⌨️";
+        self.statusItem.button.title = @"⌨️ --%";
         self.deviceMenuItem.title = @"Device: Not connected";
         self.batteryMenuItem.title = @"Battery: --";
     }

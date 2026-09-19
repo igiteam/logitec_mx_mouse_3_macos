@@ -1,6 +1,8 @@
 #!/bin/bash
-# MX Keys Mini - Offline Host Switcher for macOS
-# Manual switch via menu bar (no edge detection - keyboards have no cursor)
+# Grace Digital GDI-BTPB300 3Play - Bluetooth Audio Receiver Switcher for macOS
+# Manual switch via menu bar (1 / 2 / 3) + battery/status next to icon
+# NOTE: 3Play is an audio sink (Mac -> 3Play). It does NOT switch between Macs.
+# This app gives you a menu-bar control surface + HID probe for the device.
 
 set -e
 
@@ -12,13 +14,13 @@ NC='\033[0m'
 
 echo -e "${CYAN}"
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║       MX KEYS MINI - OFFLINE HOST SWITCHER FOR MACOS          ║"
-echo "║            MANUAL SWITCH VIA MENU BAR (1 / 2 / 3)             ║"
+echo "║   GRACE DIGITAL GDI-BTPB300 3PLAY - MACOS SWITCHER            ║"
+echo "║           MENU BAR CONTROL + DEVICE STATUS                    ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
-APP_NAME="MXKeysSwitch"
-BUNDLE_ID="com.github.mxkeysswitch"
+APP_NAME="Grace3PlaySwitch"
+BUNDLE_ID="com.github.grace3playswitch"
 
 rm -rf "$APP_NAME"
 mkdir -p "$APP_NAME/src"
@@ -28,36 +30,39 @@ cd "$APP_NAME" || exit
 # ===============================================
 # DOWNLOAD APP ICON
 # ===============================================
-echo -e "${CYAN}🎨 Downloading keyboard icon...${NC}"
+echo -e "${CYAN}🎨 Downloading Grace 3Play icon...${NC}"
 
-ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/main/logitec-mx-keys-mini.png"
-
+ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/main/GraceDigital-3play-icon.png"
 
 echo "📥 Downloading icon from: $ICON_URL"
 curl -s -L "$ICON_URL" -o "public/app_icon.png"
 
 if [ -f "public/app_icon.png" ] && [ -s "public/app_icon.png" ]; then
     echo "✅ Icon downloaded successfully!"
-    
+
     ICONSET_DIR="public/AppIcon.iconset"
+    rm -rf "$ICONSET_DIR"
     mkdir -p "$ICONSET_DIR"
-    
-    for SIZE in 16 32 64 128 256 512 1024; do
-        sips -z $SIZE $SIZE "public/app_icon.png" --out "$ICONSET_DIR/icon_${SIZE}x${SIZE}.png" 2>/dev/null || true
-        RETINA=$((SIZE * 2))
-        sips -z $RETINA $RETINA "public/app_icon.png" --out "$ICONSET_DIR/icon_${SIZE}x${SIZE}@2x.png" 2>/dev/null || true
-    done
-    
-    if command -v iconutil &> /dev/null; then
-        iconutil -c icns "$ICONSET_DIR" -o "public/app_icon.icns" || {
-            echo "⚠ iconutil failed, falling back to PNG"
-            cp "public/app_icon.png" "public/app_icon.icns"
-        }
-        echo "✅ Created .icns file (or fallback)"
+
+    sips -z 16   16   "public/app_icon.png" --out "$ICONSET_DIR/icon_16x16.png"      >/dev/null 2>&1
+    sips -z 32   32   "public/app_icon.png" --out "$ICONSET_DIR/icon_16x16@2x.png"   >/dev/null 2>&1
+    sips -z 32   32   "public/app_icon.png" --out "$ICONSET_DIR/icon_32x32.png"      >/dev/null 2>&1
+    sips -z 64   64   "public/app_icon.png" --out "$ICONSET_DIR/icon_32x32@2x.png"   >/dev/null 2>&1
+    sips -z 128  128  "public/app_icon.png" --out "$ICONSET_DIR/icon_128x128.png"    >/dev/null 2>&1
+    sips -z 256  256  "public/app_icon.png" --out "$ICONSET_DIR/icon_128x128@2x.png" >/dev/null 2>&1
+    sips -z 256  256  "public/app_icon.png" --out "$ICONSET_DIR/icon_256x256.png"    >/dev/null 2>&1
+    sips -z 512  512  "public/app_icon.png" --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null 2>&1
+    sips -z 512  512  "public/app_icon.png" --out "$ICONSET_DIR/icon_512x512.png"    >/dev/null 2>&1
+    sips -z 1024 1024 "public/app_icon.png" --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null 2>&1
+
+    if command -v iconutil &> /dev/null && \
+       iconutil -c icns "$ICONSET_DIR" -o "public/app_icon.icns" 2>/dev/null; then
+        echo "✅ Created .icns file"
     else
+        echo "⚠ iconutil failed, falling back to PNG"
         cp "public/app_icon.png" "public/app_icon.icns"
     fi
-    
+
     rm -rf "$ICONSET_DIR"
 else
     echo "⚠ Download failed, creating fallback icon"
@@ -70,26 +75,26 @@ EOF
 fi
 
 # ===============================================
-# SOURCE FILES
+# CREATE SOURCE FILES
 # ===============================================
 
-cat > "src/MXKeysManager.h" << 'EOF'
+cat > "src/Grace3PlayManager.h" << 'EOF'
 #import <Foundation/Foundation.h>
 
-@interface MXKeysManager : NSObject
+@interface Grace3PlayManager : NSObject
 @property (nonatomic, assign) BOOL running;
 - (void)start;
 - (void)stop;
-- (void)switchToChannelDirect:(int)channel;
 @property (nonatomic, assign, readonly) BOOL deviceConnected;
 @property (nonatomic, strong, readonly) NSString *deviceName;
 @property (nonatomic, assign, readonly) int batteryLevel;
-@property (nonatomic, strong, readonly) NSString *batteryLevelString;
+@property (nonatomic, strong, readonly) NSString *batteryString;
+- (void)switchToChannelDirect:(int)channel;
 @end
 EOF
 
-cat > "src/MXKeysManager.m" << 'EOF'
-#import "MXKeysManager.h"
+cat > "src/Grace3PlayManager.m" << 'EOF'
+#import "Grace3PlayManager.h"
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <IOKit/hid/IOHIDLib.h>
@@ -99,22 +104,18 @@ cat > "src/MXKeysManager.m" << 'EOF'
 // CONFIGURATION
 // ============================================
 
-#define LOGITECH_VID 0x046D
-// MX Keys Mini Bluetooth PID
-#define MX_KEYS_MINI_PID 0xB369
-// MX Keys Mini (for Mac) PID variant
-#define MX_KEYS_MINI_MAC_PID 0xB36A
+#define LOGITECH_VID 0x046D   // kept for HID probe template
+#define GRACE_VID    0x0A12   // common CSR-based BT audio VID — adjust if you know the real one
+#define GRACE_PID    0x0001
 
-// HID++ 2.0 over Bluetooth
 #define HIDPP_REPORT_ID_LONG 0x11
-#define DEVICE_INDEX_DIRECT 0xFF
+#define DEVICE_INDEX_DIRECT  0xFF
 #define SWID 0x0A
 
 #define FEATURE_ROOT 0x0000
 #define FEATURE_CHANGE_HOST 0x1814
 #define FEATURE_UNIFIED_BATTERY 0x1004
 #define FUNCTION_GET_FEATURE 0x00
-#define FUNCTION_GET_HOST 0x00
 #define FUNCTION_SET_HOST 0x01
 #define FUNCTION_GET_BATTERY 0x01
 
@@ -125,7 +126,7 @@ static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sende
 static void HIDInputReportCallback(void *context, IOReturn result, void *sender, IOHIDReportType type,
                                     uint32_t reportID, uint8_t *report, CFIndex reportLength);
 
-@interface MXKeysManager ()
+@interface Grace3PlayManager ()
 @property (nonatomic, assign) IOHIDDeviceRef hidDevice;
 @property (nonatomic, assign) IOHIDManagerRef hidManager;
 @property (nonatomic, assign) BOOL deviceReady;
@@ -135,7 +136,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, assign) BOOL changeHostIndexFound;
 @property (nonatomic, assign) uint8_t batteryIndex;
 @property (nonatomic, assign, readwrite) int batteryLevel;
-@property (nonatomic, strong, readwrite) NSString *batteryLevelString;
+@property (nonatomic, strong, readwrite) NSString *batteryString;
 @property (nonatomic, assign) int foundDevices;
 @property (nonatomic, assign) BOOL switching;
 @property (nonatomic, assign) uint8_t *inputReport;
@@ -145,12 +146,12 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, assign) BOOL awaitingBatteryIndex;
 @end
 
-@implementation MXKeysManager
+@implementation Grace3PlayManager
 
 @synthesize deviceConnected = _deviceConnected;
 @synthesize deviceName = _deviceName;
 @synthesize batteryLevel = _batteryLevel;
-@synthesize batteryLevelString = _batteryLevelString;
+@synthesize batteryString = _batteryString;
 
 - (instancetype)init {
     self = [super init];
@@ -158,12 +159,12 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         _running = NO;
         _deviceReady = NO;
         _deviceConnected = NO;
-        _deviceName = @"Not connected";
+        _deviceName = @"Grace 3Play not connected";
         _changeHostIndex = 0;
         _changeHostIndexFound = NO;
         _batteryIndex = 0;
         _batteryLevel = -1;
-        _batteryLevelString = @"--";
+        _batteryString = @"--";
         _foundDevices = 0;
         _switching = NO;
         _inputReportRegistered = NO;
@@ -173,9 +174,9 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         _inputReport = malloc(_inputReportSize);
         if (_inputReport) memset(_inputReport, 0, _inputReportSize);
 
-        printf("[MXKeys] =========================================\n");
-        printf("[MXKeys] MX Keys Mini Host Switcher\n");
-        printf("[MXKeys] =========================================\n");
+        printf("[Grace3Play] =========================================\n");
+        printf("[Grace3Play] Grace Digital GDI-BTPB300 Controller\n");
+        printf("[Grace3Play] =========================================\n");
         fflush(stdout);
     }
     return self;
@@ -185,12 +186,12 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     if (self.running) return;
     self.running = YES;
 
-    printf("[MXKeys] Starting HID manager...\n");
+    printf("[Grace3Play] Starting HID manager...\n");
     fflush(stdout);
 
     [self setupHIDManager];
 
-    printf("[MXKeys] Running - use menu bar to switch host\n");
+    printf("[Grace3Play] Running — use menu bar for channels\n");
     fflush(stdout);
 }
 
@@ -213,17 +214,17 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         self.inputReport = NULL;
     }
 
-    printf("[MXKeys] Stopped\n");
+    printf("[Grace3Play] Stopped\n");
     fflush(stdout);
 }
 
 - (void)setupHIDManager {
     self.hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
 
-    // Match ANY Logitech device - we filter by name in the callback
-    NSDictionary *criteria = @{
-        @"VendorID": @(LOGITECH_VID)
-    };
+    // Match any device whose name contains "3Play" or "Grace"
+    // We can't filter by name in the matching dictionary, so we accept all
+    // and filter in the callback.
+    NSDictionary *criteria = @{};  // no VID filter — Grace 3Play VID varies by firmware
     IOHIDManagerSetDeviceMatching(self.hidManager, (__bridge CFDictionaryRef)criteria);
 
     IOHIDManagerRegisterDeviceMatchingCallback(self.hidManager,
@@ -237,38 +238,30 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     IOHIDManagerScheduleWithRunLoop(self.hidManager, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
     IOHIDManagerOpen(self.hidManager, kIOHIDOptionsTypeNone);
 
-    printf("[MXKeys] Scanning for Logitech devices...\n");
+    printf("[Grace3Play] Scanning for 3Play device...\n");
     fflush(stdout);
 }
 
 static void HIDDeviceMatchingCallback(void *context, IOReturn result, void *sender, IOHIDDeviceRef device) {
-    MXKeysManager *self = (__bridge MXKeysManager *)context;
+    Grace3PlayManager *self = (__bridge Grace3PlayManager *)context;
     if (!device || !self) return;
 
     CFStringRef productRef = IOHIDDeviceGetProperty(device, CFSTR(kIOHIDProductKey));
-    CFNumberRef pidRef = IOHIDDeviceGetProperty(device, CFSTR(kIOHIDProductIDKey));
-
     NSString *name = productRef ? (__bridge NSString *)productRef : @"Unknown";
-    int pid = 0;
-    if (pidRef) CFNumberGetValue(pidRef, kCFNumberIntType, &pid);
 
     self.foundDevices++;
-    printf("[MXKeys] Found HID device %d: %s (PID 0x%04X)\n",
-           self.foundDevices, [name UTF8String], pid);
+    printf("[Grace3Play] Found HID device %d: %s\n",
+           self.foundDevices, [name UTF8String]);
+    fflush(stdout);
 
-    // Match MX Keys Mini by name OR by PID
-    BOOL isMXKeysMini = [name containsString:@"MX Keys Mini"] ||
-                        [name containsString:@"MX Keys"] ||
-                        (pid == MX_KEYS_MINI_PID) ||
-                        (pid == MX_KEYS_MINI_MAC_PID);
+    // Match by name — 3Play typically enumerates as "3Play" or "Grace Digital"
+    BOOL is3Play = [name containsString:@"3Play"] ||
+                   [name containsString:@"Grace"] ||
+                   [name containsString:@"BTPB300"];
 
-    if (!isMXKeysMini) {
-        fflush(stdout);
-        return;
-    }
+    if (!is3Play) return;
 
-    printf("[MXKeys] ✅ Found MX Keys Mini: %s (PID 0x%04X)\n",
-           [name UTF8String], pid);
+    printf("[Grace3Play] ✅ Found Grace 3Play: %s\n", [name UTF8String]);
     fflush(stdout);
 
     self.hidDevice = device;
@@ -283,18 +276,18 @@ static void HIDDeviceMatchingCallback(void *context, IOReturn result, void *send
 }
 
 static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sender, IOHIDDeviceRef device) {
-    MXKeysManager *self = (__bridge MXKeysManager *)context;
+    Grace3PlayManager *self = (__bridge Grace3PlayManager *)context;
     if (device == self.hidDevice) {
-        printf("[MXKeys] ❌ Keyboard removed!\n");
+        printf("[Grace3Play] ❌ 3Play removed!\n");
         self.hidDevice = NULL;
         self.deviceReady = NO;
         self.deviceConnected = NO;
-        self.deviceName = @"Not connected";
+        self.deviceName = @"Grace 3Play not connected";
         self.changeHostIndex = 0;
         self.changeHostIndexFound = NO;
         self.batteryIndex = 0;
         self.batteryLevel = -1;
-        self.batteryLevelString = @"--";
+        self.batteryString = @"--";
         self.inputReportRegistered = NO;
         [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
         fflush(stdout);
@@ -303,34 +296,30 @@ static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sende
 
 static void HIDInputReportCallback(void *context, IOReturn result, void *sender, IOHIDReportType type,
                                     uint32_t reportID, uint8_t *report, CFIndex reportLength) {
-    MXKeysManager *self = (__bridge MXKeysManager *)context;
+    Grace3PlayManager *self = (__bridge Grace3PlayManager *)context;
     if (!self || reportLength < 4) return;
 
-    printf("[MXKeys] 📥 Response (%ld bytes): ", (long)reportLength);
+    printf("[Grace3Play] 📥 Response (%ld bytes): ", (long)reportLength);
     for (int i = 0; i < reportLength && i < 16; i++) printf("%02X ", report[i]);
     printf("\n");
     fflush(stdout);
 
-    // HID++ 2.0 long report
     if (report[0] != HIDPP_REPORT_ID_LONG) return;
 
     uint8_t featureIndex = report[2];
-    uint8_t functionId = report[3] & 0x0F;   // low nibble = function
-    uint8_t swid = (report[3] >> 4) & 0x0F;  // high nibble = software id
+    uint8_t functionId = report[3] & 0x0F;
+    uint8_t swid = (report[3] >> 4) & 0x0F;
 
     if (swid != SWID) return;
 
-    // ---- Response to feature lookup ----
     if (self.awaitingHostIndex) {
-        // Function 0x00 = getFeature response
-        // report[4] = feature index (0 if not found)
         uint8_t idx = report[4];
         if (idx != 0x00 && idx != 0xFF) {
             self.changeHostIndex = idx;
             self.changeHostIndexFound = YES;
-            printf("[MXKeys] ✅ ChangeHost feature index: 0x%02X\n", idx);
+            printf("[Grace3Play] ✅ ChangeHost feature index: 0x%02X\n", idx);
         } else {
-            printf("[MXKeys] ⚠️ ChangeHost feature not found on this device\n");
+            printf("[Grace3Play] ⚠️ ChangeHost feature not found\n");
         }
         self.awaitingHostIndex = NO;
         [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
@@ -342,51 +331,32 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         uint8_t idx = report[4];
         if (idx != 0x00 && idx != 0xFF) {
             self.batteryIndex = idx;
-            printf("[MXKeys] ✅ Battery feature index: 0x%02X\n", idx);
+            printf("[Grace3Play] ✅ Battery feature index: 0x%02X\n", idx);
         } else {
-            printf("[MXKeys] ⚠️ Battery feature not found\n");
+            printf("[Grace3Play] ⚠️ Battery feature not found\n");
         }
         self.awaitingBatteryIndex = NO;
         fflush(stdout);
         return;
     }
 
-    // ---- Response to getHost / setHost ----
-    if (featureIndex == self.changeHostIndex && functionId == FUNCTION_GET_HOST) {
-        uint8_t currentHost = report[4];
-        printf("[MXKeys] 🔘 Current host: %d\n", currentHost + 1);
-        fflush(stdout);
-        return;
-    }
-
-    // ---- Response to battery ----
     if (featureIndex == self.batteryIndex && functionId == FUNCTION_GET_BATTERY) {
-        // UnifiedBattery (0x1004) response:
-        // report[4] = battery level (0-100) OR level enum depending on capability
-        // report[5] = flags
-        // report[6] = status
         uint8_t level = report[4];
         uint8_t flags = report[5];
-
-        // Bit 7 of flags indicates "state of charge" is available
         BOOL hasPercentage = (flags & 0x80) != 0;
 
         if (hasPercentage && level <= 100) {
             self.batteryLevel = level;
-            self.batteryLevelString = [NSString stringWithFormat:@"%d%%", level];
-            printf("[MXKeys] 🔋 Battery: %d%%\n", level);
+            self.batteryString = [NSString stringWithFormat:@"%d%%", level];
         } else {
-            // Level enum: 0=empty, 1=critical, 2=low, 4=good, 8=full
             NSString *levelStr = @"--";
             if (level == 1) levelStr = @"Critical";
             else if (level == 2) levelStr = @"Low";
             else if (level == 4) levelStr = @"Good";
             else if (level == 8) levelStr = @"Full";
             self.batteryLevel = -1;
-            self.batteryLevelString = levelStr;
-            printf("[MXKeys] 🔋 Battery level: %s\n", [levelStr UTF8String]);
+            self.batteryString = levelStr;
         }
-
         [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
         fflush(stdout);
         return;
@@ -404,38 +374,26 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         (__bridge void *)self
     );
     self.inputReportRegistered = YES;
-    printf("[MXKeys] 📡 Input report callback registered\n");
+    printf("[Grace3Play] 📡 Input report callback registered\n");
     fflush(stdout);
 }
 
 - (void)discoverFeatures:(IOHIDDeviceRef)device {
-    printf("[MXKeys] 🔍 Discovering features...\n");
+    printf("[Grace3Play] 🔍 Discovering features...\n");
     fflush(stdout);
 
-    // -------- Look up ChangeHost (0x1814) --------
     self.awaitingHostIndex = YES;
-
     uint8_t lookupHost[20] = {0};
     lookupHost[0] = HIDPP_REPORT_ID_LONG;
     lookupHost[1] = DEVICE_INDEX_DIRECT;
-    lookupHost[2] = 0x00;  // IRoot
+    lookupHost[2] = 0x00;
     lookupHost[3] = (uint8_t)((FUNCTION_GET_FEATURE << 4) | SWID);
-    lookupHost[4] = 0x18;  // feature id high byte
-    lookupHost[5] = 0x14;  // feature id low byte
-
-    printf("[MXKeys] 📤 Lookup CHANGE_HOST (0x1814)\n");
-    fflush(stdout);
-
-    IOReturn result = IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, 0x11, lookupHost, 20);
-    if (result != kIOReturnSuccess) {
-        printf("[MXKeys] ⚠️ ChangeHost lookup failed (%d)\n", result);
-        self.awaitingHostIndex = NO;
-    }
+    lookupHost[4] = 0x18;
+    lookupHost[5] = 0x14;
+    IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, 0x11, lookupHost, 20);
     usleep(300000);
 
-    // -------- Look up UnifiedBattery (0x1004) --------
     self.awaitingBatteryIndex = YES;
-
     uint8_t lookupBattery[20] = {0};
     lookupBattery[0] = HIDPP_REPORT_ID_LONG;
     lookupBattery[1] = DEVICE_INDEX_DIRECT;
@@ -443,41 +401,16 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     lookupBattery[3] = (uint8_t)((FUNCTION_GET_FEATURE << 4) | SWID);
     lookupBattery[4] = 0x10;
     lookupBattery[5] = 0x04;
-
-    printf("[MXKeys] 📤 Lookup UNIFIED_BATTERY (0x1004)\n");
-    fflush(stdout);
-
-    result = IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, 0x11, lookupBattery, 20);
-    if (result != kIOReturnSuccess) {
-        printf("[MXKeys] ⚠️ Battery lookup failed (%d)\n", result);
-        self.awaitingBatteryIndex = NO;
-    }
+    IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, 0x11, lookupBattery, 20);
     usleep(300000);
 
-    // Give responses time to arrive, then read battery
     [self performSelector:@selector(readBattery) withObject:nil afterDelay:1.5];
-    [self performSelector:@selector(readCurrentHost) withObject:nil afterDelay:0.5];
-}
-
-- (void)readCurrentHost {
-    if (!self.deviceReady || !self.hidDevice || !self.changeHostIndexFound) return;
-
-    uint8_t cmd[20] = {0};
-    cmd[0] = HIDPP_REPORT_ID_LONG;
-    cmd[1] = DEVICE_INDEX_DIRECT;
-    cmd[2] = self.changeHostIndex;
-    cmd[3] = (uint8_t)((FUNCTION_GET_HOST << 4) | SWID);
-
-    printf("[MXKeys] 📤 Querying current host\n");
-    fflush(stdout);
-
-    IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
 }
 
 - (void)readBattery {
     if (!self.deviceReady || !self.hidDevice) return;
     if (self.batteryIndex == 0) {
-        printf("[MXKeys] ⚠️ Battery feature index unknown, skipping\n");
+        printf("[Grace3Play] ⚠️ Battery feature index unknown, skipping\n");
         return;
     }
 
@@ -487,30 +420,24 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     cmd[2] = self.batteryIndex;
     cmd[3] = (uint8_t)((FUNCTION_GET_BATTERY << 4) | SWID);
 
-    printf("[MXKeys] 📤 Battery request\n");
-    fflush(stdout);
-
     IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
 }
 
 - (void)switchToChannelDirect:(int)channel {
     if (!self.running) {
-        printf("[MXKeys] ❌ App not running\n");
+        printf("[Grace3Play] ❌ App not running\n");
         return;
     }
-
     if (!self.deviceReady || !self.hidDevice) {
-        printf("[MXKeys] ❌ Keyboard not connected\n");
+        printf("[Grace3Play] ❌ 3Play not connected\n");
         return;
     }
-
     if (!self.changeHostIndexFound) {
-        printf("[MXKeys] ❌ ChangeHost feature index not discovered yet - try again in a moment\n");
+        printf("[Grace3Play] ❌ ChangeHost feature index not discovered yet\n");
         return;
     }
-
     if (channel < 0 || channel > 2) {
-        printf("[MXKeys] ❌ Invalid channel: %d\n", channel);
+        printf("[Grace3Play] ❌ Invalid channel: %d\n", channel);
         return;
     }
 
@@ -521,19 +448,19 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     cmd[1] = DEVICE_INDEX_DIRECT;
     cmd[2] = self.changeHostIndex;
     cmd[3] = (uint8_t)((FUNCTION_SET_HOST << 4) | SWID);
-    cmd[4] = (uint8_t)channel;  // 0 = host 1, 1 = host 2, 2 = host 3
+    cmd[4] = (uint8_t)channel;
     cmd[5] = 0x00;
 
-    printf("[MXKeys] 📤 Switch to host %d: ", channel + 1);
+    printf("[Grace3Play] 📤 Switch to channel %d: ", channel + 1);
     for (int i = 0; i < 8; i++) printf("%02X ", cmd[i]);
     printf("\n");
     fflush(stdout);
 
     IOReturn result = IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
     if (result == kIOReturnSuccess) {
-        printf("[MXKeys] ✅ Switch to host %d sent!\n", channel + 1);
+        printf("[Grace3Play] ✅ Switch to channel %d sent!\n", channel + 1);
     } else {
-        printf("[MXKeys] ❌ Send failed (error: %d)\n", result);
+        printf("[Grace3Play] ❌ Send failed (error: %d)\n", result);
     }
 
     self.switching = NO;
@@ -555,11 +482,11 @@ EOF
 
 cat > "src/AppDelegate.m" << 'EOF'
 #import "AppDelegate.h"
-#import "MXKeysManager.h"
+#import "Grace3PlayManager.h"
 
 @interface AppDelegate ()
 @property (nonatomic, strong) NSStatusItem *statusItem;
-@property (nonatomic, strong) MXKeysManager *keysManager;
+@property (nonatomic, strong) Grace3PlayManager *manager;
 @property (nonatomic, strong) NSMenuItem *toggleMenuItem;
 @property (nonatomic, strong) NSMenuItem *deviceMenuItem;
 @property (nonatomic, strong) NSMenuItem *batteryMenuItem;
@@ -569,11 +496,11 @@ cat > "src/AppDelegate.m" << 'EOF'
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
-    self.keysManager = [[MXKeysManager alloc] init];
+    self.manager = [[Grace3PlayManager alloc] init];
     self.isActive = NO;
 
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
-    self.statusItem.button.title = @"⌨️ --%";
+    self.statusItem.button.title = @"🎧 --%";;
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(updateDisplay)
@@ -582,7 +509,7 @@ cat > "src/AppDelegate.m" << 'EOF'
 
     NSMenu *menu = [[NSMenu alloc] init];
 
-    self.toggleMenuItem = [[NSMenuItem alloc] initWithTitle:@"Start Host Switching"
+    self.toggleMenuItem = [[NSMenuItem alloc] initWithTitle:@"Start 3Play Control"
                                                       action:@selector(toggleFlow:)
                                                keyEquivalent:@"s"];
     self.toggleMenuItem.target = self;
@@ -602,25 +529,25 @@ cat > "src/AppDelegate.m" << 'EOF'
 
     [menu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *switchTitle = [[NSMenuItem alloc] initWithTitle:@"── Switch Host ──"
+    NSMenuItem *switchTitle = [[NSMenuItem alloc] initWithTitle:@"── Switch Input ──"
                                                           action:nil
                                                    keyEquivalent:@""];
     [menu addItem:switchTitle];
 
-    NSMenuItem *switch1 = [[NSMenuItem alloc] initWithTitle:@"Switch to Host 1"
-                                                      action:@selector(switchToHost1:)
+    NSMenuItem *switch1 = [[NSMenuItem alloc] initWithTitle:@"Switch to Channel 1"
+                                                      action:@selector(switchToChannel1:)
                                                keyEquivalent:@"1"];
     switch1.target = self;
     [menu addItem:switch1];
 
-    NSMenuItem *switch2 = [[NSMenuItem alloc] initWithTitle:@"Switch to Host 2"
-                                                      action:@selector(switchToHost2:)
+    NSMenuItem *switch2 = [[NSMenuItem alloc] initWithTitle:@"Switch to Channel 2"
+                                                      action:@selector(switchToChannel2:)
                                                keyEquivalent:@"2"];
     switch2.target = self;
     [menu addItem:switch2];
 
-    NSMenuItem *switch3 = [[NSMenuItem alloc] initWithTitle:@"Switch to Host 3"
-                                                      action:@selector(switchToHost3:)
+    NSMenuItem *switch3 = [[NSMenuItem alloc] initWithTitle:@"Switch to Channel 3"
+                                                      action:@selector(switchToChannel3:)
                                                keyEquivalent:@"3"];
     switch3.target = self;
     [menu addItem:switch3];
@@ -640,41 +567,41 @@ cat > "src/AppDelegate.m" << 'EOF'
 
 - (void)autoStart {
     self.isActive = YES;
-    [self.keysManager start];
-    self.toggleMenuItem.title = @"Stop Host Switching";
+    [self.manager start];
+    self.toggleMenuItem.title = @"Stop 3Play Control";
     [self updateDisplay];
 }
 
 - (void)toggleFlow:(id)sender {
     self.isActive = !self.isActive;
     if (self.isActive) {
-        [self.keysManager start];
-        self.toggleMenuItem.title = @"Stop Host Switching";
+        [self.manager start];
+        self.toggleMenuItem.title = @"Stop 3Play Control";
     } else {
-        [self.keysManager stop];
-        self.toggleMenuItem.title = @"Start Host Switching";
+        [self.manager stop];
+        self.toggleMenuItem.title = @"Start 3Play Control";
     }
     [self updateDisplay];
 }
 
-- (void)switchToHost1:(id)sender { [self.keysManager switchToChannelDirect:0]; }
-- (void)switchToHost2:(id)sender { [self.keysManager switchToChannelDirect:1]; }
-- (void)switchToHost3:(id)sender { [self.keysManager switchToChannelDirect:2]; }
+- (void)switchToChannel1:(id)sender { [self.manager switchToChannelDirect:0]; }
+- (void)switchToChannel2:(id)sender { [self.manager switchToChannelDirect:1]; }
+- (void)switchToChannel3:(id)sender { [self.manager switchToChannelDirect:2]; }
 
 - (void)updateDisplay {
-    if (self.keysManager.deviceConnected) {
-        self.statusItem.button.title = @"⌨️ --%";
-        self.deviceMenuItem.title = [NSString stringWithFormat:@"Device: %@", self.keysManager.deviceName];
-        self.batteryMenuItem.title = [NSString stringWithFormat:@"Battery: %@", self.keysManager.batteryLevelString];
+    if (self.manager.deviceConnected) {
+        self.statusItem.button.title = @"🎧 --%";;
+        self.deviceMenuItem.title = [NSString stringWithFormat:@"Device: %@", self.manager.deviceName];
+        self.batteryMenuItem.title = [NSString stringWithFormat:@"Battery: %@", self.manager.batteryString];
     } else {
-        self.statusItem.button.title = @"⌨️ --%";
+        self.statusItem.button.title = @"🎧 --%";;
         self.deviceMenuItem.title = @"Device: Not connected";
         self.batteryMenuItem.title = @"Battery: --";
     }
 }
 
 - (void)quitApp:(id)sender {
-    [self.keysManager stop];
+    [self.manager stop];
     [NSApp terminate:nil];
 }
 
@@ -704,7 +631,7 @@ EOF
 # BUILD APP BUNDLE
 # ===============================================
 
-echo -e "${CYAN}🔨 Compiling MX Keys Mini Switcher...${NC}"
+echo -e "${CYAN}🔨 Compiling Grace 3Play Switcher...${NC}"
 
 APP_BUNDLE="$APP_NAME.app"
 rm -rf "$APP_BUNDLE"
@@ -738,7 +665,7 @@ cat > "Info.plist" << EOF
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>MX Keys Switch needs Bluetooth to control your Logitech keyboard</string>
+    <string>Grace 3Play Switch needs Bluetooth to manage your audio receiver</string>
 </dict>
 </plist>
 EOF
@@ -775,23 +702,24 @@ xattr -cr "$APP_BUNDLE"
 cp -R "$APP_BUNDLE" "$HOME/Applications/" 2>/dev/null || true
 cp -R "$APP_BUNDLE" "$HOME/Desktop/" 2>/dev/null || true
 
-echo -e "\n${GREEN}✅ MX Keys Mini Switcher compiled!${NC}"
+echo -e "\n${GREEN}✅ Grace 3Play Switcher compiled!${NC}"
 echo -e "${CYAN}"
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║                     WHAT THIS DOES                            ║"
+echo "║                    WHAT THIS DOES                            ║"
 echo "╠════════════════════════════════════════════════════════════════╣"
-echo "║ 1. ✅ Connects to MX Keys Mini over Bluetooth                ║"
-echo "║ 2. ✅ Dynamically discovers ChangeHost feature index         ║"
-echo "║ 3. ✅ Switches host via menu bar (Host 1 / 2 / 3)            ║"
-echo "║ 4. ✅ Shows device name and battery level in menu            ║"
-echo "║ 5. ✅ No edge detection (keyboard has no cursor)             ║"
-echo "║ 6. ✅ No USB receiver needed                                 ║"
+echo "║ 1. ✅ Menu bar icon for Grace 3Play                          ║"
+echo "║ 2. ✅ Manual switch buttons 1 / 2 / 3                        ║"
+echo "║ 3. ✅ HID probe for device name + battery                    ║"
+echo "║ 4. ✅ Same architecture as MXKeysSwitch / MXFlowSwitch       ║"
 echo "╠════════════════════════════════════════════════════════════════╣"
-echo "║ TO USE:                                                       ║"
-echo "║ 1. Grant Input Monitoring permission                         ║"
-echo "║ 2. Click ⌨️ in menu bar                                       ║"
-echo "║ 3. Use 'Switch to Host 1/2/3' to change host                 ║"
-echo "║ 4. Check console output for debug info                       ║"
+echo "║ NOTE:                                                        ║"
+echo "║ The 3Play is an audio SINK (Mac → 3Play). It does NOT        ║"
+echo "║ switch between Macs. Bluetooth A2DP pairing is controlled    ║"
+echo "║ by macOS itself (System Settings → Bluetooth). This app      ║"
+echo "║ gives you a menu-bar control surface and a HID probe —       ║"
+echo "║ if the 3Play exposes any vendor HID interface, the buttons   ║"
+echo "║ will work. If it doesn't, the buttons will log 'not          ║"
+echo "║ connected' and that's expected.                              ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 echo "⚠️  Grant Input Monitoring permission:"
@@ -800,27 +728,3 @@ echo "   Add your Terminal or the app, toggle ON"
 echo -e "${NC}"
 
 open "$APP_BUNDLE"
-
-# What's different from the mouse version
-# Feature	Mouse version	Keyboard version
-# Edge detection	Watches cursor position	Removed — no cursor on a keyboard
-# Feature index	Hardcoded 0x18 fallback	Discovered dynamically from IRoot response only
-# Battery %	Assumed percentage	Handles both percentage and level enum (Critical/Low/Good/Full)
-# Device match	Name contains "MX Master"	Name contains "MX Keys Mini" or PID 0xB369/0xB36A
-# Menu icon	🖱️ 85%	⌨️ (static) + battery as separate menu row
-# Trigger	Auto on edge	Manual only via menu bar
-# What to expect when you run it
-#     The script builds the app and launches it. A ⌨️ icon appears in the menu bar.
-#     Watch the terminal output. You should see:
-#         Found MX Keys Mini: MX Keys Mini (PID 0xB369)
-#         ✅ ChangeHost feature index: 0xXX (whatever index your firmware uses)
-#         🔋 Battery: N% or 🔋 Battery level: Good
-
-#     If ChangeHost feature not found appears, the feature lookup failed — make sure the keyboard is connected via Bluetooth, not the Logi Bolt receiver. HID++ 2.0 long reports work reliably over Bluetooth but the Bolt receiver may need a different report path.
-#     Use the menu bar → Switch to Host 1 / 2 / 3 to change host.
-
-# Known caveats
-#     Battery percentage may not appear. The MX Keys Mini's UnifiedBattery feature often only reports a level enum, not a percentage. The app handles this and shows Critical / Low / Good / Full instead. If it shows --, the keyboard's battery is being managed by macOS natively and not exposed over HID++.
-#     Feature index discovery timing. The lookup happens once when the keyboard connects. If the keyboard is asleep when you launch the app, discovery will fail. Wake the keyboard, then toggle Stop/Start in the menu.
-#     Host switching is one-way. HID++ can tell the keyboard which host to connect to, but the keyboard only sends the switch command if the currently active host is the one issuing it. This means: to switch back from Host 2 to Host 1, you need this app running on Host 1 — which won't work if the keyboard is currently connected to Host 2. For true two-way Flow behavior, you'd need the logitech-flow-kvm architecture where one machine acts as the leader and tells the others.
-
