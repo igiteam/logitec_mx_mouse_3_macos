@@ -229,6 +229,17 @@ static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sende
         self.edgeArmed = NO;
         [self.batteryTimer invalidate];
         self.batteryTimer = nil;
+
+        // Clear the battery so the menu bar shows "--%" while the mouse
+        // is on another Mac. Without this, the cached value sticks
+        // around and looks like a live reading.
+        self.batteryLevel = -1;
+        self.batteryString = @"--%";
+        self.cachedBatteryLevel = -1;
+        self.cachedBatteryString = @"--%";
+
+        // Tell the UI to refresh.
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"BatteryUpdated" object:nil];
         fflush(stdout);
     }
 }
@@ -651,15 +662,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     [self switchToChannel:channel];
 }
 
-- (int)batteryLevel {
-    if (_batteryLevel >= 0) return _batteryLevel;
-    return self.cachedBatteryLevel;
-}
-
-- (NSString *)batteryString {
-    if (_batteryLevel >= 0) return _batteryString;
-    return self.cachedBatteryString;
-}
 
 - (void)dealloc {
     [self stop];
