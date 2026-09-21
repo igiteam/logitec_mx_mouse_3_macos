@@ -210,6 +210,10 @@ static void HIDDeviceMatchingCallback(void *context, IOReturn result, void *send
 
     self.hidDevice = device;
     self.deviceReady = YES;
+    // Reset the edge re-arm on every (re)connect. When the mouse comes back
+    // to this Mac, it's because the user flicked away from here, so the
+    // current cursor position is already at an edge — don't let that fire.
+    self.edgeArmed = NO;
 
     [self registerInputReport:device];
     [self lookupChangeHost];
@@ -526,7 +530,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     // Re-arm the edge trigger once the cursor is clearly away from both
     // edges. Hysteresis = EDGE_THRESHOLD * 2 so tiny jitter doesn't
     // re-arm early.
-    CGFloat rearmDist = EDGE_THRESHOLD * 2;
+    CGFloat rearmDist = 40.0;   // must move 40 px in from either edge to re-arm
     if (!self.edgeArmed) {
         if (p.x > rearmDist && p.x < w - rearmDist) {
             self.edgeArmed = YES;
