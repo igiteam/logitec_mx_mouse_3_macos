@@ -103,9 +103,9 @@ cat > "src/MXFlowManager.m" << 'EOF'
 #define FEATURE_BATTERY_STATUS  0x1000
 #define FEATURE_CHANGE_HOST     0x1814
 
-#define FUNCTION_GET_FEATURE 0x00
-#define FUNCTION_SET_HOST    0x01
-#define FUNCTION_GET_HOST_INFO 0x00   // ChangeHost (0x1814) getHostInfo
+#define FUNCTION_GET_FEATURE    0x00
+#define FUNCTION_SET_HOST       0x01
+#define FUNCTION_GET_HOST_INFO  0x00   // ChangeHost (0x1814) getHostInfo
 
 #define FUNCTION_GET_BATTERY_UNIFIED 0x01
 #define FUNCTION_GET_BATTERY_STATUS  0x00
@@ -150,10 +150,8 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, assign) BOOL batteryLookupDone;
 @property (nonatomic, assign) BOOL edgeArmed;
 
-// Host info scan: query each of the 3 slots in turn to find which is ours.
-@property (nonatomic, assign) int hostProbeIndex;      // which slot we're asking about
-@property (nonatomic, assign) BOOL hostProbeActive;    // scanning in progress
-@property (nonatomic, assign) int hostProbeResult;     // -1 = unknown, 0..2 = detected
+// Host info probe — we send one getHostInfo request and read the reply.
+@property (nonatomic, assign) BOOL awaitingHostInfo;
 
 // Click tracking
 @property (nonatomic, assign) int clickCount;
@@ -194,12 +192,10 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         _lastPressTime = 0;
         _awaitingHostIndex = NO;
         _awaitingBatteryIndex = NO;
+        _awaitingHostInfo = NO;
         _batteryLookupDone = NO;
         _cachedBatteryLevel = -1;
         _cachedBatteryString = @"--%";
-        _hostProbeIndex = 0;
-        _hostProbeActive = NO;
-        _hostProbeResult = -1;
 
         _inputReport = malloc(_inputReportSize);
         if (_inputReport) memset(_inputReport, 0, _inputReportSize);
@@ -341,8 +337,8 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
             self.changeHostIndex = idx;
             printf("[MXFlow] ChangeHost index: 0x%02X\n", idx);
             fflush(stdout);
-            // Start scanning host slots to find which one is us.
-            [self startHostProbe];
+            // Now ask the device which host slot it's currently connected on.
+            [self probeHostInfo];
             return;
         }
 
@@ -385,39 +381,35 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 
     // ---- ChangeHost.getHostInfo reply on the ChangeHost feature index ----
-    // Reply layout (per HID++ 2.0 draft spec):
-    //   byte 0 = feature index of ChangeHost
-    //   byte 1 = fnSwid (0x00 | SWID) echo
-    //   byte 2 = host index this reply is about (we set it in the request)
-    //   byte 3 = status bitfield: bit 0 = "connected", bit 1 = "paired"
-    //   bytes 4.. = host name (UTF-8, zero-padded)
-    if (self.hostProbeActive &&
+    // Confirmed layout from MX Master 3 raw capture:
+    //   byte 2 = feature index of ChangeHost (0x0A on this device)
+    //   byte 3 = fnSwid echo (0x00 | SWID)
+    //   byte 4 = total host count (always 0x03)
+    //   byte 5 = CURRENTLY CONNECTED host index (0x00 on Mac 1, 0x01 on Mac 2, ...)
+    //
+    // So we only need one probe. No slot scan.
+    if (self.awaitingHostInfo &&
         self.changeHostIndex != 0 &&
         report[2] == self.changeHostIndex &&
         report[3] == (uint8_t)((FUNCTION_GET_HOST_INFO << 4) | SWID)) {
 
-        uint8_t slot = report[4];
-        uint8_t status = report[5];
-        BOOL connected = (status & 0x01) != 0;
+        self.awaitingHostInfo = NO;
+        uint8_t count = report[4];
+        uint8_t current = report[5];
 
-        printf("[MXFlow] Host slot %d: status=0x%02X connected=%d\n",
-               slot, status, connected);
-        fflush(stdout);
-
-        if (connected) {
-            self.myChannel = slot;
-            self.hostProbeResult = slot;
-            self.hostProbeActive = NO;
-            printf("[MXFlow] ✅ Detected this Mac as channel %d (Mac %d)\n",
-                   slot, slot + 1);
+        if (current > CHANNEL_MAX) {
+            printf("[MXFlow] ⚠ Device reports connected host = 0x%02X (out of range); defaulting to 0\n", current);
             fflush(stdout);
-            // Now that we know our slot, chain the battery lookup.
-            [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
-            return;
+            self.myChannel = 0;
+        } else {
+            self.myChannel = current;
+            printf("[MXFlow] ✅ Detected this Mac as channel %d (Mac %d) — %d hosts total\n",
+                   current, current + 1, count);
+            fflush(stdout);
         }
 
-        // Move to the next slot
-        [self probeHostSlot:slot + 1];
+        // Now chain the battery lookup.
+        [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
         return;
     }
 
@@ -511,54 +503,30 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 }
 
-// ---- Host probe: find which slot this Mac is on ----
-- (void)startHostProbe {
-    printf("[MXFlow] Scanning host slots to find this Mac...\n");
-    fflush(stdout);
-    self.hostProbeActive = YES;
-    self.hostProbeResult = -1;
-    [self probeHostSlot:0];
-}
-
-- (void)probeHostSlot:(int)slot {
-    if (slot > CHANNEL_MAX) {
-        printf("[MXFlow] ⚠ No connected host slot found; defaulting to 0\n");
-        fflush(stdout);
-        self.hostProbeActive = NO;
-        self.myChannel = 0;
-        self.hostProbeResult = 0;
-        [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
-        return;
-    }
+// ---- Single-shot host probe. The reply tells us which slot is live. ----
+- (void)probeHostInfo {
     if (!self.hidDevice || self.changeHostIndex == 0) return;
+    if (self.awaitingHostInfo) return;
 
-    printf("[MXFlow] Probing host slot %d\n", slot);
+    printf("[MXFlow] Probing connected host index...\n");
     fflush(stdout);
 
+    self.awaitingHostInfo = YES;
     uint8_t cmd[20] = {0};
     cmd[0] = HIDPP_REPORT_ID_LONG;
     cmd[1] = DEVICE_INDEX_DIRECT;
     cmd[2] = self.changeHostIndex;
     cmd[3] = (uint8_t)((FUNCTION_GET_HOST_INFO << 4) | SWID);
-    cmd[4] = (uint8_t)slot;
+    cmd[4] = 0x00;   // parameter is ignored; the reply carries the connected slot
 
     IOReturn r = IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
     if (r != kIOReturnSuccess) {
-        printf("[MXFlow] Host probe write failed: %d\n", r);
+        printf("[MXFlow] Host probe write failed: %d; defaulting to channel 0\n", r);
         fflush(stdout);
-        // Skip to next slot on write failure
-        [self performSelector:@selector(probeHostSlotNext) withObject:nil afterDelay:0.2];
+        self.awaitingHostInfo = NO;
+        self.myChannel = 0;
+        [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
     }
-}
-
-- (void)probeHostSlotNext {
-    // Called if a slot didn't reply. Move on.
-    if (!self.hostProbeActive) return;
-    // The slot number we were asking about was the last one sent. Since we
-    // don't track it separately, restart the whole probe conservatively.
-    // Simpler: skip forward by issuing the next slot number blindly.
-    static int lastSlot = -1;  // ugly but works for the retry path
-    (void)lastSlot;
 }
 
 - (void)lookupBattery {
@@ -672,9 +640,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 //   Right edge → myChannel + 1
 // On the leftmost Mac, myChannel - 1 is below CHANNEL_MIN → left does nothing.
 // On the rightmost Mac, myChannel + 1 is above CHANNEL_MAX → right does nothing.
-//
-// edgeArmed prevents double-firing: disarmed when a switch fires, re-armed
-// only when the cursor is 40 px clear of both edges.
 - (void)checkEdges {
     if (!self.running || self.switching) return;
     if (!self.deviceReady) return;
@@ -1027,18 +992,7 @@ cp -R "$APP_BUNDLE" "$HOME/Applications/"
 echo -e "\n${GREEN}✅ Built and installed to ~/Applications${NC}"
 echo ""
 echo "Same binary on every Mac — no per-machine config."
-echo "On connect the app probes the mouse's host slots and finds which is live."
-echo ""
-echo "Edges:"
-echo "  LEFT  edge → Mac to the left of this one"
-echo "  RIGHT edge → Mac to the right of this one"
-echo ""
-echo "Top button:"
-echo "  1 click  → channel 1"
-echo "  2 clicks → channel 2"
-echo "  3 clicks → channel 3 (fires instantly)"
-echo ""
-echo "Battery: 100% / 80% / 50% / 10% (cached across switches)"
+echo "On connect, the app asks the mouse which host slot is live."
 echo ""
 
 open "$HOME/Applications/$APP_BUNDLE"
