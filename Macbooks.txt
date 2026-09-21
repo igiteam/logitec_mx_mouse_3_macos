@@ -1,0 +1,132 @@
+MacBook Pro 16" 2019 i9 8-Core 2.4Ghz 32GB Ram 1TB SSD AMD 5500M 8GB Space Grey
+MacBook Pro 16" 2019 i9-9880H 2.3 Ghz 1TB SSD 32GB RAM A2141 AMD 5500M 4GB Space Grey
+Macbook Pro 15.4" 2014 i7 Dual Core 2.5GHz 500GB SSD 16GB RAM NVIDIA GT 750M 2GB Silver
+Logitech MX Master 3 Mac Edition
+Logitech MX Keys Mini Wireless Keyboard
+2x Universal Red & Blue Anaglyph 3D Glasses for Movies, Games & Photos
+Nintendo Wii Official White Remote Controller Wiimote Genuine With Nunchuck
+Infrared Sensor Bar USB-A for Wii Emulator Remote Motion Detection Setup
+OFFICIAL GENUINE APPLE USB-C TO DIGITAL AV HDMI MULTIPORT ADAPTER ORIGINAL A2119
+Earphones for Apple iPhone iPad Headphones Handsfree With Mic 3.5MM
+3rd Party Nintendo Wii Remote Controller With Motion Plus Attachment + Nunchuck & SleeveX2
+Panasonic VIERA VT30 Series 55" 3D Plasma TV - 2 x 3D official glasses in cases with chargers, remote and manual
+Amazon Basics 4K HDMI Cable 3m - 18Gbps High Speed with Ethernet, 4K@60Hz, 2160p
+Infrared Sensor Bar USB for Wii Emulator Remote Motion Detection Setup
+JBL Quantum 200 Gaming Headset Wired Over-Ear with Microphone, Multi-Platform
+Grace Digital GDI-BTPB300 3Play Bluetooth Audio Receiver 
+
+Logitech MX Master 3 Mac Edition +  Logitech MX Keys Mini Wireless Keyboard
+https://github.com/igiteam/logitec_mx_mouse_3_macos 
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                       3D DEVELOPMENT STUDIO                                             │
+│                                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐                │
+│  │              PANASONIC VIERA VT30 55" 3D PLASMA TV                  │                │
+│  │                                                                     │                │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │                │
+│  │  │  HDMI 1     │  │  HDMI 2     │  │  HDMI 3     │                  │                │
+│  │  │  MAC 1      │  │  MAC 2      │  │  MAC 3      │                  │                │
+│  │  │  (Canvas)   │  │  (Ref)      │  │  (Testing)  │                  │                │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘                  │                │
+│  │                                                                     │                │
+│  │  🕶️ 3D GLASSES READY   │   💿 USB Port → 3D Videos                   │                │
+│  └─────────────────────────────────────────────────────────────────────┘                │
+│                                    ▲                                                    │
+│                                    │                                                    │
+│                    ┌───────────────┴──────────────┐──────────────────────────┐          │
+│                    │                              │                          │          │
+│  ┌─────────────────┴─────────────────┐ ┌──────────┴──────────┐ ┌────────────────────┐   │
+│  │        MAC 1 (The Canvas)         │ │   MAC 2 (Reference) │ │   MAC 3 (Testing)  │   │
+│  │           12.4 Monetery           │ │     14.5 Sonoma     │ │     11.7 Big Sur   │   │
+│  │  ╔═══════════════════════════════╗│ │  ╔═════════════════╗│ │   ╔═══════════════╗│   │
+│  │  ║  OFP MISSION EDITOR/COMPILE   ║│ │  ║  PROJECT IGI    ║│ │   ║   OFP IGI     ║│   │
+│  │  ║  3D Viewport                  ║│ │  ║  (Original)     ║│ │   ║  (Test game)  ║│   │
+│  │  ║  Level Building               ║│ │  ║  Reference      ║│ │   ║    Gameplay   ║│   │
+│  │  ║  Scripting                    ║│ │  ║  Map/Notes      ║│ │   ║   3d enabled  ║│   │
+│  │  ╚═══════════════════════════════╝│ │  ╚═════════════════╝│ │   ╚═══════════════╝│   │
+│  │                                   │ │                     │ │                    │   │
+│  │  🎮 Wii Remote (Motion control)   │ │  🎮 Wii Remote       │ │    🎮 Wii Remote   │   │
+│  │  🕶️ Anaglyph 3D Preview           │ │  📋 Reference Docs   │ │    🕶️ Anaglyph 3D  │   │
+│  └───────────────────────────────────┘ └─────────────────────┘  └───────────────────┘   │
+│                                                                                         │
+│  ████████████████████████████████████████████████████████████████████████               │
+│  ████  LOGITECH MX MASTER 3 (Flow mouse) ████████████████████████████████               │
+│  ████  LOGITECH MX Keys Mini (Flow keyboard) ████████████████████████████               │
+│  ████████████████████████████████████████████████████████████████████████               │
+│  https://github.com/igiteam/logitec_mx_mouse_3_macos                                    │
+│  🕹️  Wii Remotes (3x) for motion controls                                               │
+│  📡  2 x Infrared Sensor Bar for pointer tracking                                       │
+│  🎧  3.5mm Earphones for audio                                                          │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────┐
+│                                                       │
+│   [IR BAR 1]  ← on the Mac (desk)                     │
+│        │                                              │
+│        ▼  You sit here/stand → point Wiimote at Mac   │
+│                                                       │
+│   ═══════════════════════════════════════════════     │
+│                                                       │
+│   [IR BAR 2]  ← on/near the TV                        │
+│        │                                              │
+│        ▼  You walk here → point Wiimote at TV         │
+│                                                       │
+│   [VT30 55" Plasma]  ← eventually                     │
+│                                                       │
+└───────────────────────────────────────────────────────┘
+
+MacBook Pro 16" 2019 → Apple USB-C to Digital AV HDMI Multiport Adapter (A2119) → HDMI 3m cable → TV
+Macbook Pro 15.4" 2014 → native HDMI port → HDMI 3m cable → TV
+
+    ╔══════════════════════════════════════════════════════════════════════════╗
+    ║                                                                          ║
+    ║                    3D DEVELOPMENT STUDIO — MASTER MAP                    ║
+    ║                                                                          ║
+    ╚══════════════════════════════════════════════════════════════════════════╝
+                                                ┌─────────────────┐    ┌──────────────────────┐
+                                               │WiiSensorBar(USB-A)│  │   WiiSensorBar(USB-A)  │
+                                                └──────────────┬──┘    └───────────────────┬──┘ 
+        ┌─────────────────┐ ┌─────────────────┐ ┌──────────────▲──┐    ┌───────────────────▲──┐
+        │     MAC 1       │ │     MAC 2       │ │     MAC 3       │    │   PANASONIC VT30     │
+        │   THE CANVAS    │ │  THE REFERENCE  │ │   THE TESTER    │    │   55" 3D PLASMA      │
+        │                 │ │                 │ │                 │    │                      │
+        │  Monterey 12.4  │ │  Sonoma 14.5    │ │  Big Sur 11.7   │    │   ┌──────┐           │
+        │  MBP 16" 2019   │ │  MBP 16" 2019   │ │  MBP 15" 2014   │    │   │HDMI 1│   (MAC3)  │
+        │  i9 8-core      │ │  i9 8-core      │ │  i7 dual-core   │    │   ├──────┤           │
+        │  32GB / 1TB     │ │  32GB / 1TB     │ │  16GB / 500GB   │    │   │HDMI 2│           │
+        │  AMD 5500M 8GB  │ │  AMD 5500M 4GB  │ │  GT 750M 2GB    │    │   ├──────┤           │
+        │                 │ │                 │ │                 │    │   │HDMI 3│           │
+        │  ▸ BUILD        │ │  ▸ LOOK         │ │  ▸ PLAY         │    │   └──────┘           │
+        │  ▸ EDIT         │ │  ▸ COMPARE      │ │  ▸ BREAK        │    │                      │
+        │  ▸ COMPILE      │ │  ▸ READ         │ │  ▸ VERIFY       │    │   🕶️  3D READY       │
+        └────────┬────────┘ └────────┬────────┘ └────────┬────┬───┘    └──────────▲───────────┘
+                 │                   │                   │    │                   │
+                 │                   │                   │    │                   │
+                 │                   │                   │    └───────────────────┘
+                 │                   │                   │        HDMI 1  (live)
+                 └───────────────────┼───────────────────┘
+                                     │
+                       ┌─────────────┴─────────────┐───────────────────────────┐
+                       │                           │                           │
+                       ▼                           ▼                           ▼
+            ┌──────────────────────┐    ┌──────────────────────┐    ┌──────────────────────┐
+            │  ᛒINPUT — LEFT HAND  │    │  ᛒINPUT — RIGHT HAND │    │   ᛒAUDIO             │ 
+            │                      │    │                      │    │   OUTPUT - MAC 1/2/3 │ 
+            │  ⌨️  MX KEYS MINI    │    │  🖱️  MX MASTER 3      │    │   Grace Digital      │ 
+            │  Logitech Flow       │    │  Logitech Flow       │    │   GDI-BTPB300 3Play  │ 
+            │  Custom app:         │    │  Custom app:         │    │   └─ 3.5mm jack      │  
+            │  MXKeysSwitch        │    │  logitec_mx_mouse_3  │    │   🎧 JBL Quantum 200 │ 
+            │                      │    │                      │    │                      │  
+            │  Host 1/2/3 via menu │    │  Host 1/2/3 via menu │    │  Host 1/2/3 via menu │
+            └──────────────────────┘    └──────────────────────┘    └──────────────────────┘
+                      │                           │
+                      └─────────────┬─────────────┘
+                                    │
+                                    ▼
+                        ┌──────────────────────────┐
+                        │   3 MACS, 1 MOUSE,       │
+                        │   1 KEYBOARD, 0 KVM      │
+                        │                          │
+                        │   Flow moves both.       │
+                        │   Menu bar switches.     │
+                        └──────────────────────────┘
