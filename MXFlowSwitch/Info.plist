@@ -26,5 +26,7 @@
     <true/>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>MX Flow Switch needs Bluetooth to control your Logitech mouse</string>
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>MX Flow Switch needs Input Monitoring to talk to your Logitech mouse via HID++.</string>
 </dict>
 </plist>

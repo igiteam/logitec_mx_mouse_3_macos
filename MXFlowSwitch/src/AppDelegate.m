@@ -61,7 +61,6 @@
     self.statusMenuItem = [[NSMenuItem alloc] initWithTitle:@"Status: Stopped"
                                                          action:nil
                                                   keyEquivalent:@""];
-    self.statusMenuItem.tag = 100;
     [menu addItem:self.statusMenuItem];
 
     [menu addItem:[NSMenuItem separatorItem]];
@@ -97,17 +96,9 @@
     }
 }
 
-- (void)switchToChannel1:(id)sender {
-    [self.flowManager switchToChannelDirect:0];
-}
-
-- (void)switchToChannel2:(id)sender {
-    [self.flowManager switchToChannelDirect:1];
-}
-
-- (void)switchToChannel3:(id)sender {
-    [self.flowManager switchToChannelDirect:2];
-}
+- (void)switchToChannel1:(id)sender { [self.flowManager switchToChannelDirect:0]; }
+- (void)switchToChannel2:(id)sender { [self.flowManager switchToChannelDirect:1]; }
+- (void)switchToChannel3:(id)sender { [self.flowManager switchToChannelDirect:2]; }
 
 - (void)updateStatus:(NSString *)status {
     if (self.statusMenuItem) {
@@ -119,10 +110,11 @@
     int battery = self.flowManager.batteryLevel;
     if (battery >= 0) {
         self.statusItem.button.title = [NSString stringWithFormat:@"🖱️ %d%%", battery];
-        self.statusItem.button.alternateTitle = [NSString stringWithFormat:@"🖱️ %d%%", battery];
+        self.statusItem.button.alternateTitle = self.statusItem.button.title;
     } else {
-        self.statusItem.button.title = @"🖱️ --%";
-        self.statusItem.button.alternateTitle = @"🖱️ --%";
+        NSString *s = self.flowManager.batteryString ?: @"--%";
+        self.statusItem.button.title = [NSString stringWithFormat:@"🖱️ %@", s];
+        self.statusItem.button.alternateTitle = self.statusItem.button.title;
     }
 }
 
