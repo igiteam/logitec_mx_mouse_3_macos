@@ -10,14 +10,19 @@
 // ============================================
 
 // Channel mapping (0-indexed, displayed 1/2/3):
-//   Channel 0 = Mac 1 (this Mac, the "home" channel)
-//   Channel 1 = Mac 2 (left-edge destination)
-//   Channel 2 = Mac 3 (right-edge destination)
+//   Channel 0 = Mac 1
+//   Channel 1 = Mac 2
+//   Channel 2 = Mac 3
+//
+// Physical desk layout: Mac 1 (left) ↔ Mac 2 (center) ↔ Mac 3 (right)
+//
+// CHANNEL_HOME = the channel of the Mac this build runs on.
+// For the Mac 1 build it's 0. If you ever build for Mac 2, change it to 1,
+// and for Mac 3 to 2. The edge logic is derived from it — no per-Mac
+// branching required.
 #define CHANNEL_MIN 0
 #define CHANNEL_MAX 2
-#define CHANNEL_HOME   0   // the Mac this app runs on
-#define CHANNEL_LEFT   1   // left edge always goes here
-#define CHANNEL_RIGHT  2   // right edge always goes here
+#define CHANNEL_HOME   0
 
 #define EDGE_THRESHOLD 5
 #define LOGITECH_VID 0x046D
@@ -56,7 +61,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic, strong) NSTimer *batteryTimer;
 @property (nonatomic, assign) CGRect screenBounds;
-@property (nonatomic, assign) int currentChannel;
 @property (nonatomic, assign) IOHIDDeviceRef hidDevice;
 @property (nonatomic, assign) IOHIDManagerRef hidManager;
 @property (nonatomic, assign, readwrite) BOOL deviceReady;
@@ -96,7 +100,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     self = [super init];
     if (self) {
         _running = NO;
-        _currentChannel = CHANNEL_HOME;
         _deviceReady = NO;
         _changeHostIndex = 0;
         _edgeArmed = YES;
@@ -229,12 +232,20 @@ static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sende
         self.batteryIndex = 0;
         self.batteryLookupDone = NO;
         self.inputReportRegistered = NO;
+        // The mouse only leaves this Mac when a channel switch *actually*
+        // took effect (Mac 2/Mac 3 received it). That's the real signal
+        // that the edge did its job, so this is where we disarm.
+        //
+        // If a switch attempt fails (target Mac offline, mouse bounces
+        // back to us), no removal callback fires and edgeArmed stays YES,
+        // so the user can flick again immediately.
+        self.edgeArmed = NO;
         [self.batteryTimer invalidate];
         self.batteryTimer = nil;
         fflush(stdout);
-        // NOTE: do NOT reset currentChannel or battery cache — the mouse will
-        // come back on the same channel, and we want the icon to keep showing
-        // the last known battery reading.
+        // NOTE: do NOT reset the battery cache — the mouse will come back
+        // on the same channel and we want the menu bar to keep showing the
+        // last known reading instead of blanking during the switch.
     }
 }
 
@@ -510,13 +521,26 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 
 // ---- Edge logic (Flow style, one step at a time) ----
 // Physical layout: Mac 1 (left) ↔ Mac 2 (center) ↔ Mac 3 (right)
-// Left edge → one Mac to the left. Right edge → one Mac to the right.
 //
-// edgeArmed prevents double-firing: once we fire a switch, the cursor
-// warp may leave the pointer near the edge, and when the mouse comes back
-// to this Mac we don't want the same edge position to fire again. We only
-// re-arm when the cursor moves away from the edge by more than
-// EDGE_THRESHOLD + a small hysteresis.
+//   Left edge  → CHANNEL_HOME - 1  (one Mac to the left in the row)
+//   Right edge → CHANNEL_HOME + 1  (one Mac to the right)
+//
+// On the leftmost Mac, CHANNEL_HOME - 1 is below CHANNEL_MIN, so left does
+// nothing. Same for right edge on the rightmost Mac.
+//
+// IMPORTANT: we use CHANNEL_HOME, not currentChannel, for the math. The
+// mouse is either here (deviceReady == YES) or away — we can't tell which
+// remote Mac it went to. But when it IS here, we're always on this Mac's
+// own channel, so the destination is unambiguously CHANNEL_HOME ± 1.
+// Using currentChannel caused the "left edge goes to Mac 3" bug because
+// it went stale across device removals.
+//
+// edgeArmed prevents double-firing when the cursor lands back at an edge
+// after a warp. It is re-armed only when the cursor moves well away from
+// both edges, and it is disarmed only when the mouse actually leaves this
+// Mac (see HIDDeviceRemovalCallback) — not on switch attempts. So if a
+// switch fails because the target Mac is offline, you can try again right
+// away without having to toss the mouse around.
 - (void)checkEdges {
     if (!self.running || self.switching) return;
     if (!self.deviceReady) return;
@@ -528,9 +552,9 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     CGFloat w = self.screenBounds.size.width;
 
     // Re-arm the edge trigger once the cursor is clearly away from both
-    // edges. Hysteresis = EDGE_THRESHOLD * 2 so tiny jitter doesn't
-    // re-arm early.
-    CGFloat rearmDist = 40.0;   // must move 40 px in from either edge to re-arm
+    // edges. 40 px is roughly a scrollbar width — comfortable without
+    // requiring a shove to the middle of the screen.
+    CGFloat rearmDist = 40.0;
     if (!self.edgeArmed) {
         if (p.x > rearmDist && p.x < w - rearmDist) {
             self.edgeArmed = YES;
@@ -539,11 +563,11 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 
     if (p.x <= EDGE_THRESHOLD) {
-        int next = self.currentChannel - 1;
+        int next = CHANNEL_HOME - 1;
         if (next >= CHANNEL_MIN) {
             printf("[MXFlow] LEFT edge -> channel %d (Mac %d)\n", next, next + 1);
             fflush(stdout);
-            self.edgeArmed = NO;
+            // Do NOT disarm here — only the actual device removal does that.
             [self switchToChannelDirect:next];
             [self warpMouse:p.x + 20 y:p.y];
         }
@@ -551,11 +575,10 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 
     if (p.x >= w - EDGE_THRESHOLD) {
-        int next = self.currentChannel + 1;
+        int next = CHANNEL_HOME + 1;
         if (next <= CHANNEL_MAX) {
             printf("[MXFlow] RIGHT edge -> channel %d (Mac %d)\n", next, next + 1);
             fflush(stdout);
-            self.edgeArmed = NO;
             [self switchToChannelDirect:next];
             [self warpMouse:p.x - 20 y:p.y];
         }
@@ -607,7 +630,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     if (!self.running) return;
     if (channel < CHANNEL_MIN || channel > CHANNEL_MAX) return;
     [self switchToChannel:channel];
-    self.currentChannel = channel;
 }
 
 // ---- Battery accessors: return cache when live value is unavailable ----
