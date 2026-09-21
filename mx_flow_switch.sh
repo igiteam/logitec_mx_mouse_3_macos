@@ -12,8 +12,8 @@ NC='\033[0m'
 
 echo -e "${CYAN}"
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║      MX MASTER 3 - OFFLINE FLOW SWITCHER FOR MACOS           ║"
-echo "║   TOP BUTTON 1/2/3 + AUTO-CHANNEL EDGES + BATTERY            ║"
+echo "║      MX MASTER 3 - OFFLINE FLOW SWITCHER FOR MACOS             ║"
+echo "║   TOP BUTTON 1/2/3 + AUTO-CHANNEL EDGES + BATTERY              ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
