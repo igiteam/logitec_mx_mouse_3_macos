@@ -8,8 +8,8 @@
 // ============================================
 
 #define LOGITECH_VID 0x046D
-#define MX_KEYS_MINI_PID     0xB369   // Bluetooth direct
-#define MX_KEYS_MINI_MAC_PID 0xB36A   // "for Mac" variant
+#define MX_KEYS_MINI_PID     0xB369
+#define MX_KEYS_MINI_MAC_PID 0xB36A
 
 #define HIDPP_REPORT_ID_LONG 0x11
 #define DEVICE_INDEX_DIRECT  0xFF
@@ -23,8 +23,8 @@
 #define FUNCTION_GET_FEATURE    0x00
 #define FUNCTION_GET_HOST_INFO  0x00
 #define FUNCTION_SET_HOST       0x01
-#define FUNCTION_GET_BATTERY_UNIFIED 0x01   // 0x1004 get_status
-#define FUNCTION_GET_BATTERY_STATUS  0x00   // 0x1000 get_battery_level_status
+#define FUNCTION_GET_BATTERY_UNIFIED 0x01
+#define FUNCTION_GET_BATTERY_STATUS  0x00
 
 // ============================================
 
@@ -53,9 +53,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, assign) BOOL awaitingBatteryIndex;
 @property (nonatomic, assign) BOOL awaitingBatteryValue;
 @property (nonatomic, assign) BOOL batteryLookupDone;
-@property (nonatomic, assign) BOOL awaitingHostInfo;
 
-// Battery cache survives reconnect
 @property (nonatomic, assign) int cachedBatteryLevel;
 @property (nonatomic, strong) NSString *cachedBatteryString;
 @end
@@ -85,7 +83,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         _awaitingHostIndex = NO;
         _awaitingBatteryIndex = NO;
         _awaitingBatteryValue = NO;
-        _awaitingHostInfo = NO;
         _batteryLookupDone = NO;
         _cachedBatteryLevel = -1;
         _cachedBatteryString = @"--";
@@ -154,7 +151,6 @@ static void HIDDeviceMatchingCallback(void *context, IOReturn result, void *send
     int pid = 0;
     if (pidRef) CFNumberGetValue(pidRef, kCFNumberIntType, &pid);
 
-    // Strict PID match to MX Keys Mini. Fallback on name only if PID is unknown.
     BOOL isMini = (pid == MX_KEYS_MINI_PID) || (pid == MX_KEYS_MINI_MAC_PID);
     if (!isMini && pid != 0) return;
     if (!isMini && ![name containsString:@"MX Keys Mini"]) return;
@@ -187,7 +183,6 @@ static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sende
         self.batteryIndex = 0;
         self.batteryLookupDone = NO;
         self.inputReportRegistered = NO;
-        // Keep battery cache so the menu doesn't blank during a switch.
         [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
         fflush(stdout);
     }
@@ -206,13 +201,12 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     fflush(stdout);
 
     // HID++ response: report[3] = (function << 4) | SWID.
-    // So the SWID is in the LOW nibble, not the high nibble. The template
-    // had this backwards, which discarded every reply.
+    // SWID lives in the LOW nibble.
     uint8_t function = (report[3] >> 4) & 0x0F;
     uint8_t swid     = report[3] & 0x0F;
     if (swid != SWID) return;
 
-    // ---- Feature index replies on feature 0x00 (ROOT) ----
+    // ---- Feature index replies on feature 0x00 ----
     if (report[2] == 0x00) {
         uint8_t idx = report[4];
 
@@ -227,8 +221,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
             self.changeHostIndexFound = YES;
             printf("[MXKeys] ChangeHost index: 0x%02X\n", idx);
             fflush(stdout);
-            // Now chain the battery lookup — 500 ms later so the keyboard
-            // isn't still busy with the first reply.
             [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
             [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
             return;
@@ -238,7 +230,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
             self.awaitingBatteryIndex = NO;
             if (idx == 0 || idx == 0xFF) {
                 if (self.batteryIsUnified) {
-                    // Fall back from 0x1004 to 0x1000
                     printf("[MXKeys] UnifiedBattery not present, trying BatteryStatus (0x1000)\n");
                     fflush(stdout);
                     self.batteryIsUnified = NO;
@@ -268,32 +259,21 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         }
     }
 
-    // ---- Host info reply (ChangeHost feature) ----
-    if (self.awaitingHostInfo && self.changeHostIndex != 0 &&
-        report[2] == self.changeHostIndex && function == FUNCTION_GET_HOST_INFO) {
-        self.awaitingHostInfo = NO;
-        uint8_t count = report[4];
-        uint8_t current = report[5];
-        printf("[MXKeys] Host info: %d hosts, currently on slot %d (host %d)\n",
-               count, current, current + 1);
-        fflush(stdout);
-        return;
-    }
-
     // ---- Battery value reply ----
     if (self.awaitingBatteryValue && self.batteryIndex != 0 && report[2] == self.batteryIndex) {
         uint8_t raw = report[4];
         BOOL ok = NO;
         int pct = -1;
 
-        if (self.batteryIsUnified) {
-            // Keyboard's 0x1004 layout differs from the mouse's. It reports the
-            // raw percentage directly in byte 4, without setting a "valid" flag
-            // in byte 5. So accept any value 1..100 as a percentage.
-            if (raw > 0 && raw <= 100) {
-                pct = raw;
-                ok = YES;
-            }
+        // MX Keys Mini's 0x1004 reports the percentage directly in byte 4,
+        // WITHOUT setting the "valid" flag in byte 5 that the MX Master
+        // mouse sets. So accept any 1..100 value as the percentage.
+        if (raw > 0 && raw <= 100) {
+            pct = raw;
+            ok = YES;
+        } else if (raw == 0) {
+            // Level enum 0 = "unavailable" — keep last
+            ok = NO;
         }
 
         if (ok) {
@@ -315,6 +295,26 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
         fflush(stdout);
         return;
+    }
+
+    // ---- Unsolicited battery notifications on the battery feature ----
+    // These arrive with function 0x00 and are not a reply to our request.
+    if (self.batteryIndex != 0 && report[2] == self.batteryIndex && function == 0x00) {
+        uint8_t raw = report[4];
+        if (raw > 0 && raw <= 100) {
+            int snapped;
+            if (raw >= 90) snapped = 100;
+            else if (raw >= 65) snapped = 80;
+            else if (raw >= 30) snapped = 50;
+            else snapped = 10;
+            self.batteryLevel = snapped;
+            self.batteryLevelString = [NSString stringWithFormat:@"%d%%", snapped];
+            self.cachedBatteryLevel = snapped;
+            self.cachedBatteryString = self.batteryLevelString;
+            printf("[MXKeys] Battery update (pushed): %d%% (raw %d)\n", snapped, raw);
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
+            fflush(stdout);
+        }
     }
 }
 
@@ -399,38 +399,11 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 }
 
-- (void)readCurrentHost {
-    if (!self.deviceReady || !self.hidDevice || !self.changeHostIndexFound) return;
-    if (self.awaitingHostInfo) return;
-
-    self.awaitingHostInfo = YES;
-    uint8_t cmd[20] = {0};
-    cmd[0] = HIDPP_REPORT_ID_LONG;
-    cmd[1] = DEVICE_INDEX_DIRECT;
-    cmd[2] = self.changeHostIndex;
-    cmd[3] = (uint8_t)((FUNCTION_GET_HOST_INFO << 4) | SWID);
-    cmd[4] = 0x00;
-
-    IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
-}
-
 - (void)switchToChannelDirect:(int)channel {
-    if (!self.running) {
-        printf("[MXKeys] ❌ App not running\n");
-        return;
-    }
-    if (!self.deviceReady || !self.hidDevice) {
-        printf("[MXKeys] ❌ Keyboard not connected\n");
-        return;
-    }
-    if (!self.changeHostIndexFound) {
-        printf("[MXKeys] ❌ ChangeHost feature not discovered yet\n");
-        return;
-    }
-    if (channel < 0 || channel > 2) {
-        printf("[MXKeys] ❌ Invalid channel: %d\n", channel);
-        return;
-    }
+    if (!self.running) { printf("[MXKeys] ❌ App not running\n"); return; }
+    if (!self.deviceReady || !self.hidDevice) { printf("[MXKeys] ❌ Keyboard not connected\n"); return; }
+    if (!self.changeHostIndexFound) { printf("[MXKeys] ❌ ChangeHost feature not discovered yet\n"); return; }
+    if (channel < 0 || channel > 2) { printf("[MXKeys] ❌ Invalid channel: %d\n", channel); return; }
 
     self.switching = YES;
     uint8_t cmd[20] = {0};
@@ -454,7 +427,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     fflush(stdout);
 }
 
-// Cache-aware accessors
 - (int)batteryLevel {
     if (_batteryLevel >= 0) return _batteryLevel;
     return self.cachedBatteryLevel;

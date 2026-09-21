@@ -1,6 +1,7 @@
 #!/bin/bash
-# MX Keys Mini - Offline Host Switcher + Wine Killer for macOS
-# Menu bar app: switch keyboard host (1/2/3) + Cmd+Shift+F12 kills Wine
+# MX Keys Mini - Host Switcher + Wine Killer for macOS
+# Menu bar app: switch keyboard host (1/2/3) + Cmd+Shift+F12 kills Wine.
+# Uses a CGEventTap so the hotkey fires even when a game has focus.
 
 set -e
 
@@ -14,6 +15,7 @@ echo -e "${CYAN}"
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║       MX KEYS MINI - HOST SWITCHER + WINE KILLER              ║"
 echo "║   Menu bar host switch + Cmd+Shift+F12 kills Wine             ║"
+echo "║   Uses CGEventTap so it works in games too                    ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
@@ -83,8 +85,8 @@ cat > "src/MXKeysManager.m" << 'EOF'
 // ============================================
 
 #define LOGITECH_VID 0x046D
-#define MX_KEYS_MINI_PID     0xB369   // Bluetooth direct
-#define MX_KEYS_MINI_MAC_PID 0xB36A   // "for Mac" variant
+#define MX_KEYS_MINI_PID     0xB369
+#define MX_KEYS_MINI_MAC_PID 0xB36A
 
 #define HIDPP_REPORT_ID_LONG 0x11
 #define DEVICE_INDEX_DIRECT  0xFF
@@ -98,8 +100,8 @@ cat > "src/MXKeysManager.m" << 'EOF'
 #define FUNCTION_GET_FEATURE    0x00
 #define FUNCTION_GET_HOST_INFO  0x00
 #define FUNCTION_SET_HOST       0x01
-#define FUNCTION_GET_BATTERY_UNIFIED 0x01   // 0x1004 get_status
-#define FUNCTION_GET_BATTERY_STATUS  0x00   // 0x1000 get_battery_level_status
+#define FUNCTION_GET_BATTERY_UNIFIED 0x01
+#define FUNCTION_GET_BATTERY_STATUS  0x00
 
 // ============================================
 
@@ -128,9 +130,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, assign) BOOL awaitingBatteryIndex;
 @property (nonatomic, assign) BOOL awaitingBatteryValue;
 @property (nonatomic, assign) BOOL batteryLookupDone;
-@property (nonatomic, assign) BOOL awaitingHostInfo;
 
-// Battery cache survives reconnect
 @property (nonatomic, assign) int cachedBatteryLevel;
 @property (nonatomic, strong) NSString *cachedBatteryString;
 @end
@@ -160,7 +160,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         _awaitingHostIndex = NO;
         _awaitingBatteryIndex = NO;
         _awaitingBatteryValue = NO;
-        _awaitingHostInfo = NO;
         _batteryLookupDone = NO;
         _cachedBatteryLevel = -1;
         _cachedBatteryString = @"--";
@@ -229,7 +228,6 @@ static void HIDDeviceMatchingCallback(void *context, IOReturn result, void *send
     int pid = 0;
     if (pidRef) CFNumberGetValue(pidRef, kCFNumberIntType, &pid);
 
-    // Strict PID match to MX Keys Mini. Fallback on name only if PID is unknown.
     BOOL isMini = (pid == MX_KEYS_MINI_PID) || (pid == MX_KEYS_MINI_MAC_PID);
     if (!isMini && pid != 0) return;
     if (!isMini && ![name containsString:@"MX Keys Mini"]) return;
@@ -262,7 +260,6 @@ static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sende
         self.batteryIndex = 0;
         self.batteryLookupDone = NO;
         self.inputReportRegistered = NO;
-        // Keep battery cache so the menu doesn't blank during a switch.
         [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
         fflush(stdout);
     }
@@ -281,13 +278,12 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     fflush(stdout);
 
     // HID++ response: report[3] = (function << 4) | SWID.
-    // So the SWID is in the LOW nibble, not the high nibble. The template
-    // had this backwards, which discarded every reply.
+    // SWID lives in the LOW nibble.
     uint8_t function = (report[3] >> 4) & 0x0F;
     uint8_t swid     = report[3] & 0x0F;
     if (swid != SWID) return;
 
-    // ---- Feature index replies on feature 0x00 (ROOT) ----
+    // ---- Feature index replies on feature 0x00 ----
     if (report[2] == 0x00) {
         uint8_t idx = report[4];
 
@@ -302,8 +298,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
             self.changeHostIndexFound = YES;
             printf("[MXKeys] ChangeHost index: 0x%02X\n", idx);
             fflush(stdout);
-            // Now chain the battery lookup — 500 ms later so the keyboard
-            // isn't still busy with the first reply.
             [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
             [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
             return;
@@ -313,7 +307,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
             self.awaitingBatteryIndex = NO;
             if (idx == 0 || idx == 0xFF) {
                 if (self.batteryIsUnified) {
-                    // Fall back from 0x1004 to 0x1000
                     printf("[MXKeys] UnifiedBattery not present, trying BatteryStatus (0x1000)\n");
                     fflush(stdout);
                     self.batteryIsUnified = NO;
@@ -343,32 +336,21 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         }
     }
 
-    // ---- Host info reply (ChangeHost feature) ----
-    if (self.awaitingHostInfo && self.changeHostIndex != 0 &&
-        report[2] == self.changeHostIndex && function == FUNCTION_GET_HOST_INFO) {
-        self.awaitingHostInfo = NO;
-        uint8_t count = report[4];
-        uint8_t current = report[5];
-        printf("[MXKeys] Host info: %d hosts, currently on slot %d (host %d)\n",
-               count, current, current + 1);
-        fflush(stdout);
-        return;
-    }
-
     // ---- Battery value reply ----
     if (self.awaitingBatteryValue && self.batteryIndex != 0 && report[2] == self.batteryIndex) {
         uint8_t raw = report[4];
         BOOL ok = NO;
         int pct = -1;
 
-        if (self.batteryIsUnified) {
-            // Keyboard's 0x1004 layout differs from the mouse's. It reports the
-            // raw percentage directly in byte 4, without setting a "valid" flag
-            // in byte 5. So accept any value 1..100 as a percentage.
-            if (raw > 0 && raw <= 100) {
-                pct = raw;
-                ok = YES;
-            }
+        // MX Keys Mini's 0x1004 reports the percentage directly in byte 4,
+        // WITHOUT setting the "valid" flag in byte 5 that the MX Master
+        // mouse sets. So accept any 1..100 value as the percentage.
+        if (raw > 0 && raw <= 100) {
+            pct = raw;
+            ok = YES;
+        } else if (raw == 0) {
+            // Level enum 0 = "unavailable" — keep last
+            ok = NO;
         }
 
         if (ok) {
@@ -390,6 +372,26 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
         fflush(stdout);
         return;
+    }
+
+    // ---- Unsolicited battery notifications on the battery feature ----
+    // These arrive with function 0x00 and are not a reply to our request.
+    if (self.batteryIndex != 0 && report[2] == self.batteryIndex && function == 0x00) {
+        uint8_t raw = report[4];
+        if (raw > 0 && raw <= 100) {
+            int snapped;
+            if (raw >= 90) snapped = 100;
+            else if (raw >= 65) snapped = 80;
+            else if (raw >= 30) snapped = 50;
+            else snapped = 10;
+            self.batteryLevel = snapped;
+            self.batteryLevelString = [NSString stringWithFormat:@"%d%%", snapped];
+            self.cachedBatteryLevel = snapped;
+            self.cachedBatteryString = self.batteryLevelString;
+            printf("[MXKeys] Battery update (pushed): %d%% (raw %d)\n", snapped, raw);
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
+            fflush(stdout);
+        }
     }
 }
 
@@ -474,38 +476,11 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 }
 
-- (void)readCurrentHost {
-    if (!self.deviceReady || !self.hidDevice || !self.changeHostIndexFound) return;
-    if (self.awaitingHostInfo) return;
-
-    self.awaitingHostInfo = YES;
-    uint8_t cmd[20] = {0};
-    cmd[0] = HIDPP_REPORT_ID_LONG;
-    cmd[1] = DEVICE_INDEX_DIRECT;
-    cmd[2] = self.changeHostIndex;
-    cmd[3] = (uint8_t)((FUNCTION_GET_HOST_INFO << 4) | SWID);
-    cmd[4] = 0x00;
-
-    IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
-}
-
 - (void)switchToChannelDirect:(int)channel {
-    if (!self.running) {
-        printf("[MXKeys] ❌ App not running\n");
-        return;
-    }
-    if (!self.deviceReady || !self.hidDevice) {
-        printf("[MXKeys] ❌ Keyboard not connected\n");
-        return;
-    }
-    if (!self.changeHostIndexFound) {
-        printf("[MXKeys] ❌ ChangeHost feature not discovered yet\n");
-        return;
-    }
-    if (channel < 0 || channel > 2) {
-        printf("[MXKeys] ❌ Invalid channel: %d\n", channel);
-        return;
-    }
+    if (!self.running) { printf("[MXKeys] ❌ App not running\n"); return; }
+    if (!self.deviceReady || !self.hidDevice) { printf("[MXKeys] ❌ Keyboard not connected\n"); return; }
+    if (!self.changeHostIndexFound) { printf("[MXKeys] ❌ ChangeHost feature not discovered yet\n"); return; }
+    if (channel < 0 || channel > 2) { printf("[MXKeys] ❌ Invalid channel: %d\n", channel); return; }
 
     self.switching = YES;
     uint8_t cmd[20] = {0};
@@ -529,7 +504,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     fflush(stdout);
 }
 
-// Cache-aware accessors
 - (int)batteryLevel {
     if (_batteryLevel >= 0) return _batteryLevel;
     return self.cachedBatteryLevel;
@@ -555,11 +529,10 @@ cat > "src/AppDelegate.m" << 'EOF'
 #import "MXKeysManager.h"
 #import <Carbon/Carbon.h>
 
-// Hotkey: Cmd + Shift + F12
-#define HOTKEY_KEYCODE  kVK_F12
-#define HOTKEY_MODS     (cmdKey | shiftKey)
-#define HOTKEY_ID       1
-#define HOTKEY_SIG      'WnKl'
+// Hotkey: Cmd + Shift + F12, watched via CGEventTap so it fires even
+// when a game has focus (games can swallow Carbon RegisterEventHotKey).
+#define WATCHED_KEYCODE  kVK_F12
+#define WATCHED_MODS     (kCGEventFlagMaskCommand | kCGEventFlagMaskShift)
 
 @interface AppDelegate ()
 @property (nonatomic, strong) NSStatusItem *statusItem;
@@ -568,11 +541,12 @@ cat > "src/AppDelegate.m" << 'EOF'
 @property (nonatomic, strong) NSMenuItem *deviceMenuItem;
 @property (nonatomic, strong) NSMenuItem *batteryMenuItem;
 @property (nonatomic, assign) BOOL isActive;
-@property (nonatomic, assign) EventHotKeyRef hotKeyRef;
-@property (nonatomic, assign) EventHandlerRef hotKeyHandlerRef;
+@property (nonatomic, assign) CFMachPortRef eventTap;
+@property (nonatomic, assign) CFRunLoopSourceRef eventTapSource;
 @end
 
-static OSStatus WineHotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent, void *userData);
+static CGEventRef EventTapCallback(CGEventTapProxy proxy, CGEventType type,
+                                    CGEventRef event, void *userInfo);
 
 @implementation AppDelegate
 
@@ -648,38 +622,61 @@ static OSStatus WineHotKeyHandler(EventHandlerCallRef nextHandler, EventRef theE
 
     self.statusItem.menu = menu;
 
-    [self registerWineHotKey];
+    [self installEventTap];
 
     [self performSelector:@selector(autoStart) withObject:nil afterDelay:0.5];
 }
 
-- (void)registerWineHotKey {
-    EventTypeSpec eventType;
-    eventType.eventClass = kEventClassKeyboard;
-    eventType.eventKind  = kEventHotKeyPressed;
+// ---------------------------------------------------------------
+// CGEventTap — sees key events before the focused app does.
+// Runs on the main run loop. If macOS disables it (e.g. because a
+// tap callback took too long), kCGEventTapDisabledByTimeout fires
+// and we just re-enable.
+// ---------------------------------------------------------------
+- (void)installEventTap {
+    CGEventMask mask = CGEventMaskBit(kCGEventKeyDown);
 
-    InstallApplicationEventHandler(&WineHotKeyHandler,
-                                   1,
-                                   &eventType,
-                                   (__bridge void *)self,
-                                   &_hotKeyHandlerRef);
+    // kCGSessionEventTap sits above the app layer but below the window
+    // server. For most games this is enough — the event is delivered to
+    // us before the game's own keyboard handler can consume it.
+    self.eventTap = CGEventTapCreate(kCGSessionEventTap,
+                                     kCGHeadInsertEventTap,
+                                     kCGEventTapOptionDefault,
+                                     mask,
+                                     EventTapCallback,
+                                     (__bridge void *)self);
 
-    EventHotKeyID hotKeyID;
-    hotKeyID.signature = HOTKEY_SIG;
-    hotKeyID.id        = HOTKEY_ID;
-
-    OSStatus status = RegisterEventHotKey(HOTKEY_KEYCODE,
-                                          HOTKEY_MODS,
-                                          hotKeyID,
-                                          GetApplicationEventTarget(),
-                                          0,
-                                          &_hotKeyRef);
-    if (status == noErr) {
-        printf("[MXKeys] ✅ Registered Cmd+Shift+F12 for Wine killer\n");
-    } else {
-        printf("[MXKeys] ⚠️ Hotkey registration failed (%d) — another app may own Cmd+Shift+F12\n", (int)status);
+    if (!self.eventTap) {
+        printf("[MXKeys] ⚠️ Could not create event tap — Accessibility permission missing.\n");
+        printf("[MXKeys]    Open System Settings → Privacy & Security → Accessibility,\n");
+        printf("[MXKeys]    and enable this app. Then relaunch.\n");
+        fflush(stdout);
+        return;
     }
+
+    self.eventTapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault,
+                                                         self.eventTap, 0);
+    CFRunLoopAddSource(CFRunLoopGetCurrent(),
+                       self.eventTapSource,
+                       kCFRunLoopCommonModes);
+    CGEventTapEnable(self.eventTap, true);
+
+    printf("[MXKeys] ✅ Event tap installed for Cmd+Shift+F12\n");
     fflush(stdout);
+}
+
+- (void)removeEventTap {
+    if (self.eventTapSource) {
+        CFRunLoopRemoveSource(CFRunLoopGetCurrent(),
+                              self.eventTapSource,
+                              kCFRunLoopCommonModes);
+        CFRelease(self.eventTapSource);
+        self.eventTapSource = NULL;
+    }
+    if (self.eventTap) {
+        CFRelease(self.eventTap);
+        self.eventTap = NULL;
+    }
 }
 
 - (void)autoStart {
@@ -752,15 +749,13 @@ static OSStatus WineHotKeyHandler(EventHandlerCallRef nextHandler, EventRef theE
 }
 
 - (void)quitApp:(id)sender {
-    if (self.hotKeyRef) { UnregisterEventHotKey(self.hotKeyRef); self.hotKeyRef = NULL; }
-    if (self.hotKeyHandlerRef) { RemoveEventHandler(self.hotKeyHandlerRef); self.hotKeyHandlerRef = NULL; }
+    [self removeEventTap];
     [self.keysManager stop];
     [NSApp terminate:nil];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
-    if (self.hotKeyRef) UnregisterEventHotKey(self.hotKeyRef);
-    if (self.hotKeyHandlerRef) RemoveEventHandler(self.hotKeyHandlerRef);
+    [self removeEventTap];
 }
 
 - (void)dealloc {
@@ -769,18 +764,37 @@ static OSStatus WineHotKeyHandler(EventHandlerCallRef nextHandler, EventRef theE
 
 @end
 
-static OSStatus WineHotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent, void *userData) {
-    AppDelegate *self = (__bridge AppDelegate *)userData;
-    if (!self) return noErr;
+// Plain C callback for the event tap.
+static CGEventRef EventTapCallback(CGEventTapProxy proxy, CGEventType type,
+                                    CGEventRef event, void *userInfo) {
+    AppDelegate *self = (__bridge AppDelegate *)userInfo;
 
-    EventHotKeyID hkID;
-    GetEventParameter(theEvent, kEventParamDirectObject, typeEventHotKeyID,
-                      NULL, sizeof(hkID), NULL, &hkID);
-
-    if (hkID.signature == HOTKEY_SIG && hkID.id == HOTKEY_ID) {
-        [self killWineProcesses];
+    // macOS disables the tap after a timeout; re-enable it.
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        if (self.eventTap) CGEventTapEnable(self.eventTap, true);
+        return event;
     }
-    return noErr;
+
+    if (type != kCGEventKeyDown) return event;
+
+    CGKeyCode keycode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+    CGEventFlags flags = CGEventGetFlags(event);
+
+    if (keycode == WATCHED_KEYCODE &&
+        (flags & WATCHED_MODS) == WATCHED_MODS) {
+
+        // Check that ONLY cmd+shift is held — ignore if other modifiers
+        // like control or option are also down, so we don't steal other
+        // combos that happen to end in F12.
+        CGEventFlags extra = flags & (kCGEventFlagMaskControl | kCGEventFlagMaskAlternate);
+        if (extra == 0) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self killWineProcesses];
+            });
+        }
+    }
+    // Return the event unchanged so F12 still reaches the game if it wants it.
+    return event;
 }
 
 int main(int argc, const char * argv[]) {
@@ -798,7 +812,7 @@ EOF
 # BUILD
 # ===============================================
 
-echo -e "${CYAN}🔨 Compiling MX Keys Mini + Wine Killer...${NC}"
+echo -e "${CYAN}🔨 Compiling MX Keys Mini + Wine Killer (event tap)...${NC}"
 
 APP_BUNDLE="$APP_NAME.app"
 rm -rf "$APP_BUNDLE"
@@ -824,6 +838,8 @@ cat > "Info.plist" << EOF
     <string>MX Keys Switch needs Bluetooth to control your Logitech keyboard</string>
     <key>NSInputMonitoringUsageDescription</key>
     <string>MX Keys Switch needs Input Monitoring to talk to your Logitech keyboard via HID++.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>MX Keys Switch needs Accessibility to catch Cmd+Shift+F12 while games are running.</string>
 </dict>
 </plist>
 EOF
@@ -868,10 +884,14 @@ mkdir -p "$HOME/Applications"
 cp -R "$APP_BUNDLE" "$HOME/Applications/"
 
 echo ""
-echo -e "${GREEN}✅ MX Keys Mini + Wine Killer built${NC}"
+echo -e "${GREEN}✅ Built${NC}"
 echo ""
 echo "  ⌨️  Menu bar: switch host 1/2/3, kill Wine, quit"
-echo "  ⌘⇧F12: kills Wine processes from anywhere"
+echo "  ⌘⇧F12: kills Wine from anywhere, including fullscreen games"
+echo ""
+echo -e "${YELLOW}⚠ First launch will ask for Accessibility permission.${NC}"
+echo -e "${YELLOW}  System Settings → Privacy & Security → Accessibility → enable this app.${NC}"
+echo -e "${YELLOW}  Then relaunch it. (Input Monitoring is still needed too.)${NC}"
 echo ""
 
 open "$HOME/Applications/$APP_BUNDLE"

@@ -17,5 +17,7 @@
     <string>MX Keys Switch needs Bluetooth to control your Logitech keyboard</string>
     <key>NSInputMonitoringUsageDescription</key>
     <string>MX Keys Switch needs Input Monitoring to talk to your Logitech keyboard via HID++.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>MX Keys Switch needs Accessibility to catch Cmd+Shift+F12 while games are running.</string>
 </dict>
 </plist>

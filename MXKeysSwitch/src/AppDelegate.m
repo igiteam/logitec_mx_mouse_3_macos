@@ -2,11 +2,10 @@
 #import "MXKeysManager.h"
 #import <Carbon/Carbon.h>
 
-// Hotkey: Cmd + Shift + F12
-#define HOTKEY_KEYCODE  kVK_F12
-#define HOTKEY_MODS     (cmdKey | shiftKey)
-#define HOTKEY_ID       1
-#define HOTKEY_SIG      'WnKl'
+// Hotkey: Cmd + Shift + F12, watched via CGEventTap so it fires even
+// when a game has focus (games can swallow Carbon RegisterEventHotKey).
+#define WATCHED_KEYCODE  kVK_F12
+#define WATCHED_MODS     (kCGEventFlagMaskCommand | kCGEventFlagMaskShift)
 
 @interface AppDelegate ()
 @property (nonatomic, strong) NSStatusItem *statusItem;
@@ -15,11 +14,12 @@
 @property (nonatomic, strong) NSMenuItem *deviceMenuItem;
 @property (nonatomic, strong) NSMenuItem *batteryMenuItem;
 @property (nonatomic, assign) BOOL isActive;
-@property (nonatomic, assign) EventHotKeyRef hotKeyRef;
-@property (nonatomic, assign) EventHandlerRef hotKeyHandlerRef;
+@property (nonatomic, assign) CFMachPortRef eventTap;
+@property (nonatomic, assign) CFRunLoopSourceRef eventTapSource;
 @end
 
-static OSStatus WineHotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent, void *userData);
+static CGEventRef EventTapCallback(CGEventTapProxy proxy, CGEventType type,
+                                    CGEventRef event, void *userInfo);
 
 @implementation AppDelegate
 
@@ -95,38 +95,61 @@ static OSStatus WineHotKeyHandler(EventHandlerCallRef nextHandler, EventRef theE
 
     self.statusItem.menu = menu;
 
-    [self registerWineHotKey];
+    [self installEventTap];
 
     [self performSelector:@selector(autoStart) withObject:nil afterDelay:0.5];
 }
 
-- (void)registerWineHotKey {
-    EventTypeSpec eventType;
-    eventType.eventClass = kEventClassKeyboard;
-    eventType.eventKind  = kEventHotKeyPressed;
+// ---------------------------------------------------------------
+// CGEventTap — sees key events before the focused app does.
+// Runs on the main run loop. If macOS disables it (e.g. because a
+// tap callback took too long), kCGEventTapDisabledByTimeout fires
+// and we just re-enable.
+// ---------------------------------------------------------------
+- (void)installEventTap {
+    CGEventMask mask = CGEventMaskBit(kCGEventKeyDown);
 
-    InstallApplicationEventHandler(&WineHotKeyHandler,
-                                   1,
-                                   &eventType,
-                                   (__bridge void *)self,
-                                   &_hotKeyHandlerRef);
+    // kCGSessionEventTap sits above the app layer but below the window
+    // server. For most games this is enough — the event is delivered to
+    // us before the game's own keyboard handler can consume it.
+    self.eventTap = CGEventTapCreate(kCGSessionEventTap,
+                                     kCGHeadInsertEventTap,
+                                     kCGEventTapOptionDefault,
+                                     mask,
+                                     EventTapCallback,
+                                     (__bridge void *)self);
 
-    EventHotKeyID hotKeyID;
-    hotKeyID.signature = HOTKEY_SIG;
-    hotKeyID.id        = HOTKEY_ID;
-
-    OSStatus status = RegisterEventHotKey(HOTKEY_KEYCODE,
-                                          HOTKEY_MODS,
-                                          hotKeyID,
-                                          GetApplicationEventTarget(),
-                                          0,
-                                          &_hotKeyRef);
-    if (status == noErr) {
-        printf("[MXKeys] ✅ Registered Cmd+Shift+F12 for Wine killer\n");
-    } else {
-        printf("[MXKeys] ⚠️ Hotkey registration failed (%d) — another app may own Cmd+Shift+F12\n", (int)status);
+    if (!self.eventTap) {
+        printf("[MXKeys] ⚠️ Could not create event tap — Accessibility permission missing.\n");
+        printf("[MXKeys]    Open System Settings → Privacy & Security → Accessibility,\n");
+        printf("[MXKeys]    and enable this app. Then relaunch.\n");
+        fflush(stdout);
+        return;
     }
+
+    self.eventTapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault,
+                                                         self.eventTap, 0);
+    CFRunLoopAddSource(CFRunLoopGetCurrent(),
+                       self.eventTapSource,
+                       kCFRunLoopCommonModes);
+    CGEventTapEnable(self.eventTap, true);
+
+    printf("[MXKeys] ✅ Event tap installed for Cmd+Shift+F12\n");
     fflush(stdout);
+}
+
+- (void)removeEventTap {
+    if (self.eventTapSource) {
+        CFRunLoopRemoveSource(CFRunLoopGetCurrent(),
+                              self.eventTapSource,
+                              kCFRunLoopCommonModes);
+        CFRelease(self.eventTapSource);
+        self.eventTapSource = NULL;
+    }
+    if (self.eventTap) {
+        CFRelease(self.eventTap);
+        self.eventTap = NULL;
+    }
 }
 
 - (void)autoStart {
@@ -199,15 +222,13 @@ static OSStatus WineHotKeyHandler(EventHandlerCallRef nextHandler, EventRef theE
 }
 
 - (void)quitApp:(id)sender {
-    if (self.hotKeyRef) { UnregisterEventHotKey(self.hotKeyRef); self.hotKeyRef = NULL; }
-    if (self.hotKeyHandlerRef) { RemoveEventHandler(self.hotKeyHandlerRef); self.hotKeyHandlerRef = NULL; }
+    [self removeEventTap];
     [self.keysManager stop];
     [NSApp terminate:nil];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
-    if (self.hotKeyRef) UnregisterEventHotKey(self.hotKeyRef);
-    if (self.hotKeyHandlerRef) RemoveEventHandler(self.hotKeyHandlerRef);
+    [self removeEventTap];
 }
 
 - (void)dealloc {
@@ -216,18 +237,37 @@ static OSStatus WineHotKeyHandler(EventHandlerCallRef nextHandler, EventRef theE
 
 @end
 
-static OSStatus WineHotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent, void *userData) {
-    AppDelegate *self = (__bridge AppDelegate *)userData;
-    if (!self) return noErr;
+// Plain C callback for the event tap.
+static CGEventRef EventTapCallback(CGEventTapProxy proxy, CGEventType type,
+                                    CGEventRef event, void *userInfo) {
+    AppDelegate *self = (__bridge AppDelegate *)userInfo;
 
-    EventHotKeyID hkID;
-    GetEventParameter(theEvent, kEventParamDirectObject, typeEventHotKeyID,
-                      NULL, sizeof(hkID), NULL, &hkID);
-
-    if (hkID.signature == HOTKEY_SIG && hkID.id == HOTKEY_ID) {
-        [self killWineProcesses];
+    // macOS disables the tap after a timeout; re-enable it.
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        if (self.eventTap) CGEventTapEnable(self.eventTap, true);
+        return event;
     }
-    return noErr;
+
+    if (type != kCGEventKeyDown) return event;
+
+    CGKeyCode keycode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+    CGEventFlags flags = CGEventGetFlags(event);
+
+    if (keycode == WATCHED_KEYCODE &&
+        (flags & WATCHED_MODS) == WATCHED_MODS) {
+
+        // Check that ONLY cmd+shift is held — ignore if other modifiers
+        // like control or option are also down, so we don't steal other
+        // combos that happen to end in F12.
+        CGEventFlags extra = flags & (kCGEventFlagMaskControl | kCGEventFlagMaskAlternate);
+        if (extra == 0) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self killWineProcesses];
+            });
+        }
+    }
+    // Return the event unchanged so F12 still reaches the game if it wants it.
+    return event;
 }
 
 int main(int argc, const char * argv[]) {
