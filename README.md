@@ -1,6 +1,6 @@
 # MX Flow Switch + MX Keys Mini Switcher
 
-**Recreate Logitech Flow over Bluetooth for MX Master mice and MX Keys Mini keyboards — no USB receiver, no Logitech software, no account.**
+**Recreate Logitech Flow over Bluetooth for MX Mouse Master 3 and MX Keys Mini keyboards — no USB receiver, no Logitech software, no account.**
 
 Two lightweight macOS menu bar apps that let you switch your mouse and keyboard between up to three Macs using screen edges, a physical button, a menu bar item, or a global hotkey. Batteries are shown in the menu bar. Wine processes can be killed system-wide from any app, including fullscreen games.
 
@@ -42,14 +42,14 @@ A USB receiver is **not** required and **not** supported.
 
 ### Build and install
 
-    git clone <your-repo-url> logitec_mx_mouse_3_macos
+    git clone https://github.com/igiteam/logitec_mx_mouse_3_macos
     cd logitec_mx_mouse_3_macos
 
     chmod +x ./mx_flow_switch.sh
     ./mx_flow_switch.sh
 
-    chmod +x ./mx_keys_switch.sh
-    ./mx_keys_switch.sh
+    chmod +x ./mx_keyboard_mini.sh
+    ./mx_keyboard_mini.sh
 
 Each script compiles the Objective-C source, produces a signed `.app` bundle, installs it to `~/Applications/`, and launches it.
 
