@@ -7,6 +7,7 @@
 @property (nonatomic, strong) NSMenuItem *toggleMenuItem;
 @property (nonatomic, assign) BOOL isActive;
 @property (nonatomic, strong) NSMenuItem *statusMenuItem;
+@property (nonatomic, assign) BOOL permissionPrompted;
 @end
 
 @implementation AppDelegate
@@ -14,6 +15,7 @@
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
     self.flowManager = [[MXFlowManager alloc] init];
     self.isActive = NO;
+    self.permissionPrompted = NO;
 
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
     self.statusItem.button.title = @"🖱️ --%";
@@ -38,23 +40,20 @@
                                                    keyEquivalent:@""];
     [menu addItem:switchTitle];
 
-    NSMenuItem *switch1 = [[NSMenuItem alloc] initWithTitle:@"Switch to Channel 1"
+    NSMenuItem *switch1 = [[NSMenuItem alloc] initWithTitle:@"Channel 1"
                                                       action:@selector(switchToChannel1:)
                                                keyEquivalent:@"1"];
-    switch1.target = self;
-    [menu addItem:switch1];
+    switch1.target = self; [menu addItem:switch1];
 
-    NSMenuItem *switch2 = [[NSMenuItem alloc] initWithTitle:@"Switch to Channel 2"
+    NSMenuItem *switch2 = [[NSMenuItem alloc] initWithTitle:@"Channel 2"
                                                       action:@selector(switchToChannel2:)
                                                keyEquivalent:@"2"];
-    switch2.target = self;
-    [menu addItem:switch2];
+    switch2.target = self; [menu addItem:switch2];
 
-    NSMenuItem *switch3 = [[NSMenuItem alloc] initWithTitle:@"Switch to Channel 3"
+    NSMenuItem *switch3 = [[NSMenuItem alloc] initWithTitle:@"Channel 3"
                                                       action:@selector(switchToChannel3:)
                                                keyEquivalent:@"3"];
-    switch3.target = self;
-    [menu addItem:switch3];
+    switch3.target = self; [menu addItem:switch3];
 
     [menu addItem:[NSMenuItem separatorItem]];
 
@@ -68,8 +67,7 @@
     NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit"
                                                        action:@selector(quitApp:)
                                                 keyEquivalent:@"q"];
-    quitItem.target = self;
-    [menu addItem:quitItem];
+    quitItem.target = self; [menu addItem:quitItem];
 
     self.statusItem.menu = menu;
 
@@ -81,6 +79,22 @@
     [self.flowManager start];
     self.toggleMenuItem.title = @"Stop Flow Switching";
     [self updateStatus:@"Running"];
+    [self performSelector:@selector(checkForDevice) withObject:nil afterDelay:3.0];
+}
+
+- (void)checkForDevice {
+    if (self.flowManager.deviceReady || self.permissionPrompted) return;
+    self.permissionPrompted = YES;
+
+    NSAlert *a = [[NSAlert alloc] init];
+    a.messageText = @"Input Monitoring permission required";
+    a.informativeText = @"MX Flow Switch can't see your Logitech mouse. Open System Settings → Privacy & Security → Input Monitoring and enable this app, then quit and relaunch.";
+    [a addButtonWithTitle:@"Open Settings"];
+    [a addButtonWithTitle:@"Later"];
+    if ([a runModal] == NSAlertFirstButtonReturn) {
+        [[NSWorkspace sharedWorkspace] openURL:
+            [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"]];
+    }
 }
 
 - (void)toggleFlow:(id)sender {
@@ -110,12 +124,11 @@
     int battery = self.flowManager.batteryLevel;
     if (battery >= 0) {
         self.statusItem.button.title = [NSString stringWithFormat:@"🖱️ %d%%", battery];
-        self.statusItem.button.alternateTitle = self.statusItem.button.title;
     } else {
         NSString *s = self.flowManager.batteryString ?: @"--%";
         self.statusItem.button.title = [NSString stringWithFormat:@"🖱️ %@", s];
-        self.statusItem.button.alternateTitle = self.statusItem.button.title;
     }
+    self.statusItem.button.alternateTitle = self.statusItem.button.title;
 }
 
 - (void)quitApp:(id)sender {

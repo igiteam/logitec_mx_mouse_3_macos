@@ -9,9 +9,15 @@
 // CONFIG
 // ============================================
 
-#define CHANNEL_LEFT   0
-#define CHANNEL_RIGHT  1
-#define CHANNEL_TOP    2
+// Channel mapping (0-indexed, displayed 1/2/3):
+//   Channel 0 = Mac 1 (this Mac, the "home" channel)
+//   Channel 1 = Mac 2 (left-edge destination)
+//   Channel 2 = Mac 3 (right-edge destination)
+#define CHANNEL_MIN 0
+#define CHANNEL_MAX 2
+#define CHANNEL_HOME   0   // the Mac this app runs on
+#define CHANNEL_LEFT   1   // left edge always goes here
+#define CHANNEL_RIGHT  2   // right edge always goes here
 
 #define EDGE_THRESHOLD 5
 #define LOGITECH_VID 0x046D
@@ -20,17 +26,18 @@
 #define DEVICE_INDEX_DIRECT 0xFF
 #define SWID 0x0A
 
-#define FEATURE_CHANGE_HOST 0x1814
+#define FEATURE_ROOT 0x0000
 #define FEATURE_UNIFIED_BATTERY 0x1004
+#define FEATURE_BATTERY_STATUS  0x1000
+#define FEATURE_CHANGE_HOST     0x1814
 
 #define FUNCTION_GET_FEATURE 0x00
 #define FUNCTION_SET_HOST    0x01
-#define FUNCTION_GET_BATTERY 0x01
+#define FUNCTION_GET_BATTERY_UNIFIED 0x01  // 0x1004 get_status
+#define FUNCTION_GET_BATTERY_STATUS  0x00  // 0x1000 get_battery_level_status
 
 // Confirmed from raw dump on MX Master 3:
-//   press/release toggle: 11 FF 0E 10 <state>
-// The button toggles between state 0 and 1 on every press.
-// We count every event, not just one state.
+//   toggle event: 11 FF 0E 10 <state>   state flips 0/1 on every press
 #define TOP_BUTTON_FEATURE 0x0E
 #define TOP_BUTTON_EVENT   0x10
 
@@ -55,6 +62,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, assign, readwrite) BOOL deviceReady;
 @property (nonatomic, assign) uint8_t changeHostIndex;
 @property (nonatomic, assign) uint8_t batteryIndex;
+@property (nonatomic, assign) BOOL batteryIsUnified;    // YES = 0x1004, NO = 0x1000
 @property (nonatomic, assign, readwrite) int batteryLevel;
 @property (nonatomic, strong, readwrite) NSString *batteryString;
 @property (nonatomic, assign) BOOL switching;
@@ -71,6 +79,10 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, assign) int clickCount;
 @property (nonatomic, strong) NSTimer *clickResetTimer;
 @property (nonatomic, assign) CFTimeInterval lastPressTime;
+
+// Battery cache (survives disconnect)
+@property (nonatomic, assign) int cachedBatteryLevel;
+@property (nonatomic, strong) NSString *cachedBatteryString;
 @end
 
 @implementation MXFlowManager
@@ -83,10 +95,11 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     self = [super init];
     if (self) {
         _running = NO;
-        _currentChannel = -1;
+        _currentChannel = CHANNEL_HOME;
         _deviceReady = NO;
         _changeHostIndex = 0;
         _batteryIndex = 0;
+        _batteryIsUnified = NO;
         _batteryLevel = -1;
         _batteryString = @"--%";
         _switching = NO;
@@ -100,12 +113,14 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         _awaitingHostIndex = NO;
         _awaitingBatteryIndex = NO;
         _batteryLookupDone = NO;
+        _cachedBatteryLevel = -1;
+        _cachedBatteryString = @"--%";
 
         _inputReport = malloc(_inputReportSize);
         if (_inputReport) memset(_inputReport, 0, _inputReportSize);
 
         printf("[MXFlow] =========================================\n");
-        printf("[MXFlow] MX Master 3 Flow Switcher + Battery\n");
+        printf("[MXFlow] MX Master 3 Flow Switcher\n");
         printf("[MXFlow] =========================================\n");
         fflush(stdout);
     }
@@ -185,12 +200,7 @@ static void HIDDeviceMatchingCallback(void *context, IOReturn result, void *send
 
     NSString *name = (__bridge NSString *)productRef;
 
-    // Silent skip for non-mouse Logitech devices
-    if (![name containsString:@"MX Master"] && ![name containsString:@"MX Anywhere"]) {
-        return;
-    }
-
-    // Already attached — ignore duplicate enumeration
+    if (![name containsString:@"MX Master"] && ![name containsString:@"MX Anywhere"]) return;
     if (self.hidDevice != NULL) return;
 
     printf("[MXFlow] Found: %s\n", [name UTF8String]);
@@ -200,8 +210,6 @@ static void HIDDeviceMatchingCallback(void *context, IOReturn result, void *send
     self.deviceReady = YES;
 
     [self registerInputReport:device];
-
-    // Sequential lookup: ChangeHost first, battery only after
     [self lookupChangeHost];
 }
 
@@ -213,13 +221,14 @@ static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sende
         self.deviceReady = NO;
         self.changeHostIndex = 0;
         self.batteryIndex = 0;
-        self.batteryLevel = -1;
-        self.batteryString = @"--%";
-        self.inputReportRegistered = NO;
         self.batteryLookupDone = NO;
+        self.inputReportRegistered = NO;
         [self.batteryTimer invalidate];
         self.batteryTimer = nil;
         fflush(stdout);
+        // NOTE: do NOT reset currentChannel or battery cache — the mouse will
+        // come back on the same channel, and we want the icon to keep showing
+        // the last known battery reading.
     }
 }
 
@@ -227,9 +236,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
                                     uint32_t reportID, uint8_t *report, CFIndex reportLength) {
     MXFlowManager *self = (__bridge MXFlowManager *)context;
     if (!self || reportLength < 5) return;
-
-    // Only handle HID++ long reports. Mouse movement (reportID 0x02) is
-    // silently ignored — no log, no handling.
     if (report[0] != 0x11) return;
 
     printf("[MXFlow] HID++ [%2ld]: ", (long)reportLength);
@@ -244,30 +250,46 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         if (self.awaitingHostIndex) {
             self.awaitingHostIndex = NO;
             if (idx == 0 || idx == 0xFF) {
-                printf("[MXFlow] ChangeHost not present on this device\n");
+                printf("[MXFlow] ChangeHost not present\n");
                 fflush(stdout);
                 return;
             }
             self.changeHostIndex = idx;
             printf("[MXFlow] ChangeHost index: 0x%02X\n", idx);
             fflush(stdout);
-            // Delay before battery lookup — device needs a moment
             [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
             return;
         }
 
         if (self.awaitingBatteryIndex) {
             self.awaitingBatteryIndex = NO;
-            self.batteryLookupDone = YES;
             if (idx == 0 || idx == 0xFF) {
-                printf("[MXFlow] Battery feature not present on this device\n");
+                // 0x1004 not present — fall back to 0x1000
+                if (self.batteryIsUnified) {
+                    printf("[MXFlow] UnifiedBattery not present, trying BatteryStatus (0x1000)\n");
+                    fflush(stdout);
+                    self.batteryIsUnified = NO;
+                    self.awaitingBatteryIndex = YES;
+                    uint8_t cmd[20] = {0};
+                    cmd[0] = HIDPP_REPORT_ID_LONG;
+                    cmd[1] = DEVICE_INDEX_DIRECT;
+                    cmd[2] = 0x00;
+                    cmd[3] = (uint8_t)((FUNCTION_GET_FEATURE << 4) | SWID);
+                    cmd[4] = 0x10;
+                    cmd[5] = 0x00;
+                    IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
+                    return;
+                }
+                printf("[MXFlow] No battery feature on this device\n");
+                self.batteryLookupDone = YES;
                 fflush(stdout);
                 return;
             }
             self.batteryIndex = idx;
-            printf("[MXFlow] Battery index: 0x%02X\n", idx);
+            self.batteryLookupDone = YES;
+            printf("[MXFlow] Battery index: 0x%02X (feature 0x%04X)\n",
+                   idx, self.batteryIsUnified ? 0x1004 : 0x1000);
             fflush(stdout);
-            // Start polling
             [self performSelector:@selector(readBattery) withObject:nil afterDelay:0.3];
             self.batteryTimer = [NSTimer scheduledTimerWithTimeInterval:30.0
                                                                   target:self
@@ -283,27 +305,47 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         self.batteryIndex != 0 &&
         report[2] == self.batteryIndex) {
 
-        uint8_t level = report[4];
-        uint8_t flags = report[5];
-        BOOL hasPercentage = (flags & 0x80) != 0;
+        uint8_t raw = report[4];
+        BOOL ok = NO;
+        int pct = -1;
 
-        if (hasPercentage && level <= 100) {
-            self.batteryLevel = level;
-            self.batteryString = [NSString stringWithFormat:@"%d%%", level];
-            printf("[MXFlow] Battery: %d%%\n", level);
-        } else {
-            NSString *s = @"--";
-            switch (level) {
-                case 0: s = @"Empty"; break;
-                case 1: s = @"Critical"; break;
-                case 2: s = @"Low"; break;
-                case 3: s = @"Good"; break;
-                case 4: s = @"Full"; break;
-                default: s = @"--"; break;
+        if (self.batteryIsUnified) {
+            // 0x1004: byte4 = state of charge %, byte5 = level flags,
+            // byte6 = charging status. flags bit 7 = "percentage valid".
+            uint8_t flags = report[5];
+            if ((flags & 0x80) && raw <= 100) {
+                pct = raw;
+                ok = YES;
             }
-            self.batteryLevel = -1;
-            self.batteryString = s;
-            printf("[MXFlow] Battery level: %s\n", [s UTF8String]);
+        } else {
+            // 0x1000: byte4 = level %, byte5 = next level %, byte6 = status.
+            // Reported levels are discrete (100/80/50/30/10/5).
+            uint8_t status = report[6];
+            BOOL charging = (status == 1 || status == 2 || status == 4);
+            if (raw > 0 && raw <= 100) {
+                pct = raw;
+                ok = YES;
+            } else if (charging && raw == 0) {
+                // invalid level while charging — keep last
+                ok = NO;
+            }
+        }
+
+        if (ok) {
+            // Snap to nearest of {100, 80, 50, 10}
+            int snapped;
+            if (pct >= 90) snapped = 100;
+            else if (pct >= 65) snapped = 80;
+            else if (pct >= 30) snapped = 50;
+            else snapped = 10;
+
+            self.batteryLevel = snapped;
+            self.batteryString = [NSString stringWithFormat:@"%d%%", snapped];
+            self.cachedBatteryLevel = snapped;
+            self.cachedBatteryString = self.batteryString;
+            printf("[MXFlow] Battery: %d%% (raw %d)\n", snapped, pct);
+        } else {
+            printf("[MXFlow] Battery read inconclusive, keeping last\n");
         }
 
         self.awaitingBatteryValue = NO;
@@ -313,10 +355,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         return;
     }
 
-    // ---- Top button (toggle) ----
-    // Count every event on this feature/event pair, regardless of state.
-    // The 80ms debounce in registerTopButtonPress filters duplicate events
-    // from the same physical press.
+    // ---- Top button ----
     if (report[2] == TOP_BUTTON_FEATURE && report[3] == TOP_BUTTON_EVENT) {
         [self registerTopButtonPress];
         return;
@@ -351,7 +390,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 
     IOReturn r = IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
     if (r != kIOReturnSuccess) {
-        printf("[MXFlow] ChangeHost lookup write failed: %d\n", r);
+        printf("[MXFlow] ChangeHost write failed: %d\n", r);
         self.awaitingHostIndex = NO;
         fflush(stdout);
     }
@@ -363,6 +402,8 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     if (self.awaitingBatteryIndex) return;
     if (self.batteryLookupDone) return;
 
+    // Try UnifiedBattery first
+    self.batteryIsUnified = YES;
     printf("[MXFlow] Looking up UNIFIED_BATTERY (0x1004)\n");
     fflush(stdout);
 
@@ -377,7 +418,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 
     IOReturn r = IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
     if (r != kIOReturnSuccess) {
-        printf("[MXFlow] Battery lookup write failed: %d\n", r);
+        printf("[MXFlow] Battery write failed: %d\n", r);
         self.awaitingBatteryIndex = NO;
         fflush(stdout);
     }
@@ -391,12 +432,14 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     self.batteryReadInProgress = YES;
     self.awaitingBatteryValue = YES;
 
+    uint8_t fn = self.batteryIsUnified ? FUNCTION_GET_BATTERY_UNIFIED
+                                        : FUNCTION_GET_BATTERY_STATUS;
+
     uint8_t cmd[20] = {0};
     cmd[0] = HIDPP_REPORT_ID_LONG;
     cmd[1] = DEVICE_INDEX_DIRECT;
     cmd[2] = self.batteryIndex;
-    cmd[3] = (uint8_t)((FUNCTION_GET_BATTERY << 4) | SWID);
-    cmd[4] = 0x00;
+    cmd[3] = (uint8_t)((fn << 4) | SWID);
 
     IOReturn result = IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
     if (result != kIOReturnSuccess) {
@@ -417,20 +460,14 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 // ---- Click logic ----
 - (void)registerTopButtonPress {
     CFTimeInterval now = CACurrentMediaTime();
-
-    // Debounce: swallow duplicate events from the same physical press
     if (self.lastPressTime > 0 && (now - self.lastPressTime) < CLICK_DEBOUNCE) return;
 
     CFTimeInterval delta = now - self.lastPressTime;
     self.lastPressTime = now;
 
-    if (delta < CLICK_DELTA_MAX && self.clickCount > 0) {
-        self.clickCount++;
-    } else {
-        self.clickCount = 1;
-    }
+    if (delta < CLICK_DELTA_MAX && self.clickCount > 0) self.clickCount++;
+    else self.clickCount = 1;
 
-    // 3+ clicks: fire immediately
     if (self.clickCount >= 3) {
         printf("[MXFlow] Top button 3 clicks -> channel 3\n");
         fflush(stdout);
@@ -455,11 +492,9 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 - (void)clickWindowExpired {
     int count = self.clickCount;
     self.clickCount = 0;
-
     int channel = -1;
     if (count == 1) channel = 0;
     else if (count == 2) channel = 1;
-
     if (channel >= 0) {
         printf("[MXFlow] Top button %d click(s) -> channel %d\n", count, channel + 1);
         fflush(stdout);
@@ -467,8 +502,14 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 }
 
+// ---- Edge logic (Flow style, one step at a time) ----
+// Physical layout: Mac 1 (left) ↔ Mac 2 (center) ↔ Mac 3 (right)
+// Left edge → one Mac to the left. Right edge → one Mac to the right.
+// On Mac 1, left edge does nothing. On Mac 3, right edge does nothing.
+// currentChannel tracks where this Mac's app thinks the mouse is.
 - (void)checkEdges {
     if (!self.running || self.switching) return;
+    if (!self.deviceReady) return;
 
     CGEventRef event = CGEventCreate(NULL);
     CGPoint p = CGEventGetLocation(event);
@@ -477,31 +518,25 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     CGFloat w = self.screenBounds.size.width;
 
     if (p.x <= EDGE_THRESHOLD) {
-        if (self.currentChannel != CHANNEL_LEFT) {
-            printf("[MXFlow] LEFT edge -> channel 1\n");
-            [self switchToChannel:CHANNEL_LEFT];
-            self.currentChannel = CHANNEL_LEFT;
+        // LEFT edge: go back one Mac in the row.
+        int next = self.currentChannel - 1;
+        if (next >= CHANNEL_MIN) {
+            printf("[MXFlow] LEFT edge -> channel %d (Mac %d)\n", next, next + 1);
+            fflush(stdout);
+            [self switchToChannelDirect:next];
             [self warpMouse:p.x + 20 y:p.y];
         }
         return;
     }
 
     if (p.x >= w - EDGE_THRESHOLD) {
-        if (self.currentChannel != CHANNEL_RIGHT) {
-            printf("[MXFlow] RIGHT edge -> channel 2\n");
-            [self switchToChannel:CHANNEL_RIGHT];
-            self.currentChannel = CHANNEL_RIGHT;
+        // RIGHT edge: go forward one Mac in the row.
+        int next = self.currentChannel + 1;
+        if (next <= CHANNEL_MAX) {
+            printf("[MXFlow] RIGHT edge -> channel %d (Mac %d)\n", next, next + 1);
+            fflush(stdout);
+            [self switchToChannelDirect:next];
             [self warpMouse:p.x - 20 y:p.y];
-        }
-        return;
-    }
-
-    if (p.y <= EDGE_THRESHOLD) {
-        if (self.currentChannel != CHANNEL_TOP) {
-            printf("[MXFlow] TOP edge -> channel 3\n");
-            [self switchToChannel:CHANNEL_TOP];
-            self.currentChannel = CHANNEL_TOP;
-            [self warpMouse:p.x y:p.y + 20];
         }
         return;
     }
@@ -519,6 +554,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 }
 
 - (void)switchToChannel:(int)channel {
+    if (channel < CHANNEL_MIN || channel > CHANNEL_MAX) return;
     if (self.changeHostIndex == 0 || !self.deviceReady || !self.hidDevice) {
         printf("[MXFlow] Cannot switch (changeHost=0x%02X ready=%d)\n",
                self.changeHostIndex, self.deviceReady);
@@ -548,8 +584,20 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 
 - (void)switchToChannelDirect:(int)channel {
     if (!self.running) return;
+    if (channel < CHANNEL_MIN || channel > CHANNEL_MAX) return;
     [self switchToChannel:channel];
     self.currentChannel = channel;
+}
+
+// ---- Battery accessors: return cache when live value is unavailable ----
+- (int)batteryLevel {
+    if (_batteryLevel >= 0) return _batteryLevel;
+    return self.cachedBatteryLevel;
+}
+
+- (NSString *)batteryString {
+    if (_batteryLevel >= 0) return _batteryString;
+    return self.cachedBatteryString;
 }
 
 - (void)dealloc {
