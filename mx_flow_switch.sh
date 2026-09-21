@@ -152,6 +152,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, assign) BOOL awaitingHostIndex;
 @property (nonatomic, assign) BOOL awaitingBatteryIndex;
 @property (nonatomic, assign) BOOL batteryLookupDone;
+@property (nonatomic, assign) BOOL edgeArmed;
 
 // Click tracking
 @property (nonatomic, assign) int clickCount;
@@ -176,6 +177,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         _currentChannel = CHANNEL_HOME;
         _deviceReady = NO;
         _changeHostIndex = 0;
+        _edgeArmed = YES;
         _batteryIndex = 0;
         _batteryIsUnified = NO;
         _batteryLevel = -1;
@@ -583,8 +585,12 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 // ---- Edge logic (Flow style, one step at a time) ----
 // Physical layout: Mac 1 (left) ↔ Mac 2 (center) ↔ Mac 3 (right)
 // Left edge → one Mac to the left. Right edge → one Mac to the right.
-// On Mac 1, left edge does nothing. On Mac 3, right edge does nothing.
-// currentChannel tracks where this Mac's app thinks the mouse is.
+//
+// edgeArmed prevents double-firing: once we fire a switch, the cursor
+// warp may leave the pointer near the edge, and when the mouse comes back
+// to this Mac we don't want the same edge position to fire again. We only
+// re-arm when the cursor moves away from the edge by more than
+// EDGE_THRESHOLD + a small hysteresis.
 - (void)checkEdges {
     if (!self.running || self.switching) return;
     if (!self.deviceReady) return;
@@ -595,12 +601,23 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 
     CGFloat w = self.screenBounds.size.width;
 
+    // Re-arm the edge trigger once the cursor is clearly away from both
+    // edges. Hysteresis = EDGE_THRESHOLD * 2 so tiny jitter doesn't
+    // re-arm early.
+    CGFloat rearmDist = EDGE_THRESHOLD * 2;
+    if (!self.edgeArmed) {
+        if (p.x > rearmDist && p.x < w - rearmDist) {
+            self.edgeArmed = YES;
+        }
+        return;
+    }
+
     if (p.x <= EDGE_THRESHOLD) {
-        // LEFT edge: go back one Mac in the row.
         int next = self.currentChannel - 1;
         if (next >= CHANNEL_MIN) {
             printf("[MXFlow] LEFT edge -> channel %d (Mac %d)\n", next, next + 1);
             fflush(stdout);
+            self.edgeArmed = NO;
             [self switchToChannelDirect:next];
             [self warpMouse:p.x + 20 y:p.y];
         }
@@ -608,11 +625,11 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 
     if (p.x >= w - EDGE_THRESHOLD) {
-        // RIGHT edge: go forward one Mac in the row.
         int next = self.currentChannel + 1;
         if (next <= CHANNEL_MAX) {
             printf("[MXFlow] RIGHT edge -> channel %d (Mac %d)\n", next, next + 1);
             fflush(stdout);
+            self.edgeArmed = NO;
             [self switchToChannelDirect:next];
             [self warpMouse:p.x - 20 y:p.y];
         }
