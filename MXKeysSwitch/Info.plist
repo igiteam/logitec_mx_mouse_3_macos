@@ -2,29 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>
-    <string>MXKeysSwitch</string>
-    <key>CFBundleDisplayName</key>
-    <string>MXKeysSwitch</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.github.mxkeysswitch</string>
-    <key>CFBundleVersion</key>
-    <string>1.0</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleExecutable</key>
-    <string>MXKeysSwitch</string>
-    <key>CFBundleIconFile</key>
-    <string>app_icon</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>11.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSHighResolutionCapable</key>
-    <true/>
+    <key>CFBundleName</key><string>MXKeysSwitch</string>
+    <key>CFBundleDisplayName</key><string>MXKeysSwitch</string>
+    <key>CFBundleIdentifier</key><string>com.github.mxkeysswitch</string>
+    <key>CFBundleVersion</key><string>1.0</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleExecutable</key><string>MXKeysSwitch</string>
+    <key>CFBundleIconFile</key><string>app_icon</string>
+    <key>LSMinimumSystemVersion</key><string>11.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>MX Keys Switch needs Bluetooth to control your Logitech keyboard</string>
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>MX Keys Switch needs Input Monitoring to talk to your Logitech keyboard via HID++.</string>
 </dict>
 </plist>

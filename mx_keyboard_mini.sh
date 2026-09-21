@@ -1,6 +1,6 @@
 #!/bin/bash
-# MX Keys Mini - Offline Host Switcher for macOS
-# Manual switch via menu bar (no edge detection - keyboards have no cursor)
+# MX Keys Mini - Offline Host Switcher + Wine Killer for macOS
+# Menu bar app: switch keyboard host (1/2/3) + Cmd+Shift+F12 kills Wine
 
 set -e
 
@@ -12,13 +12,14 @@ NC='\033[0m'
 
 echo -e "${CYAN}"
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║       MX KEYS MINI - OFFLINE HOST SWITCHER FOR MACOS          ║"
-echo "║            MANUAL SWITCH VIA MENU BAR (1 / 2 / 3)             ║"
+echo "║       MX KEYS MINI - HOST SWITCHER + WINE KILLER              ║"
+echo "║   Menu bar host switch + Cmd+Shift+F12 kills Wine             ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
 APP_NAME="MXKeysSwitch"
 BUNDLE_ID="com.github.mxkeysswitch"
+SIGN_IDENTITY="MXFlowLocal"
 
 rm -rf "$APP_NAME"
 mkdir -p "$APP_NAME/src"
@@ -26,51 +27,34 @@ mkdir -p "$APP_NAME/public"
 cd "$APP_NAME" || exit
 
 # ===============================================
-# DOWNLOAD APP ICON
+# ICON
 # ===============================================
 echo -e "${CYAN}🎨 Downloading keyboard icon...${NC}"
-
 ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/main/logitec-mx-keys-mini.png"
-
-
-echo "📥 Downloading icon from: $ICON_URL"
 curl -s -L "$ICON_URL" -o "public/app_icon.png"
 
 if [ -f "public/app_icon.png" ] && [ -s "public/app_icon.png" ]; then
-    echo "✅ Icon downloaded successfully!"
-    
     ICONSET_DIR="public/AppIcon.iconset"
-    mkdir -p "$ICONSET_DIR"
-    
+    rm -rf "$ICONSET_DIR"; mkdir -p "$ICONSET_DIR"
     for SIZE in 16 32 64 128 256 512 1024; do
         sips -z $SIZE $SIZE "public/app_icon.png" --out "$ICONSET_DIR/icon_${SIZE}x${SIZE}.png" 2>/dev/null || true
         RETINA=$((SIZE * 2))
         sips -z $RETINA $RETINA "public/app_icon.png" --out "$ICONSET_DIR/icon_${SIZE}x${SIZE}@2x.png" 2>/dev/null || true
     done
-    
     if command -v iconutil &> /dev/null; then
-        iconutil -c icns "$ICONSET_DIR" -o "public/app_icon.icns" || {
-            echo "⚠ iconutil failed, falling back to PNG"
+        iconutil -c icns "$ICONSET_DIR" -o "public/app_icon.icns" 2>/dev/null || \
             cp "public/app_icon.png" "public/app_icon.icns"
-        }
-        echo "✅ Created .icns file (or fallback)"
     else
         cp "public/app_icon.png" "public/app_icon.icns"
     fi
-    
     rm -rf "$ICONSET_DIR"
+    echo "✅ Icon ready"
 else
-    echo "⚠ Download failed, creating fallback icon"
-    cat > public/app_icon.png.b64 << 'EOF'
-iVBORw0KGgoAAAANSUhEUgAAAgAAAAIAAQMAAADOtgr5AAAAAXNSR0IB2cksfwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAANQTFRFAAAAp3o92gAAABxJREFUeJztwTEBAAAAwqD1T20Hb6AAAAAAAAA+Bhw4AAG1cXrRAAAAAElFTkSuQmCC
-EOF
-    base64 -D < public/app_icon.png.b64 > public/app_icon.png 2>/dev/null || true
-    cp public/app_icon.png public/app_icon.icns 2>/dev/null || true
-    echo -e "${GREEN}✅ Created fallback icon${NC}"
+    echo "⚠ No icon"
 fi
 
 # ===============================================
-# SOURCE FILES
+# SOURCE
 # ===============================================
 
 cat > "src/MXKeysManager.h" << 'EOF'
@@ -91,32 +75,31 @@ EOF
 cat > "src/MXKeysManager.m" << 'EOF'
 #import "MXKeysManager.h"
 #import <AppKit/AppKit.h>
-#import <CoreGraphics/CoreGraphics.h>
 #import <IOKit/hid/IOHIDLib.h>
 #import <IOKit/IOKitLib.h>
 
 // ============================================
-// CONFIGURATION
+// CONFIG
 // ============================================
 
 #define LOGITECH_VID 0x046D
-// MX Keys Mini Bluetooth PID
-#define MX_KEYS_MINI_PID 0xB369
-// MX Keys Mini (for Mac) PID variant
-#define MX_KEYS_MINI_MAC_PID 0xB36A
+#define MX_KEYS_MINI_PID     0xB369   // Bluetooth direct
+#define MX_KEYS_MINI_MAC_PID 0xB36A   // "for Mac" variant
 
-// HID++ 2.0 over Bluetooth
 #define HIDPP_REPORT_ID_LONG 0x11
-#define DEVICE_INDEX_DIRECT 0xFF
-#define SWID 0x0A
+#define DEVICE_INDEX_DIRECT  0xFF
+#define SWID                 0x0A
 
-#define FEATURE_ROOT 0x0000
-#define FEATURE_CHANGE_HOST 0x1814
-#define FEATURE_UNIFIED_BATTERY 0x1004
-#define FUNCTION_GET_FEATURE 0x00
-#define FUNCTION_GET_HOST 0x00
-#define FUNCTION_SET_HOST 0x01
-#define FUNCTION_GET_BATTERY 0x01
+#define FEATURE_ROOT             0x0000
+#define FEATURE_CHANGE_HOST      0x1814
+#define FEATURE_UNIFIED_BATTERY  0x1004
+#define FEATURE_BATTERY_STATUS   0x1000
+
+#define FUNCTION_GET_FEATURE    0x00
+#define FUNCTION_GET_HOST_INFO  0x00
+#define FUNCTION_SET_HOST       0x01
+#define FUNCTION_GET_BATTERY_UNIFIED 0x01   // 0x1004 get_status
+#define FUNCTION_GET_BATTERY_STATUS  0x00   // 0x1000 get_battery_level_status
 
 // ============================================
 
@@ -134,15 +117,22 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, assign) uint8_t changeHostIndex;
 @property (nonatomic, assign) BOOL changeHostIndexFound;
 @property (nonatomic, assign) uint8_t batteryIndex;
+@property (nonatomic, assign) BOOL batteryIsUnified;
 @property (nonatomic, assign, readwrite) int batteryLevel;
 @property (nonatomic, strong, readwrite) NSString *batteryLevelString;
-@property (nonatomic, assign) int foundDevices;
 @property (nonatomic, assign) BOOL switching;
 @property (nonatomic, assign) uint8_t *inputReport;
 @property (nonatomic, assign) size_t inputReportSize;
 @property (nonatomic, assign) BOOL inputReportRegistered;
 @property (nonatomic, assign) BOOL awaitingHostIndex;
 @property (nonatomic, assign) BOOL awaitingBatteryIndex;
+@property (nonatomic, assign) BOOL awaitingBatteryValue;
+@property (nonatomic, assign) BOOL batteryLookupDone;
+@property (nonatomic, assign) BOOL awaitingHostInfo;
+
+// Battery cache survives reconnect
+@property (nonatomic, assign) int cachedBatteryLevel;
+@property (nonatomic, strong) NSString *cachedBatteryString;
 @end
 
 @implementation MXKeysManager
@@ -162,19 +152,24 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         _changeHostIndex = 0;
         _changeHostIndexFound = NO;
         _batteryIndex = 0;
+        _batteryIsUnified = NO;
         _batteryLevel = -1;
         _batteryLevelString = @"--";
-        _foundDevices = 0;
         _switching = NO;
         _inputReportRegistered = NO;
         _awaitingHostIndex = NO;
         _awaitingBatteryIndex = NO;
+        _awaitingBatteryValue = NO;
+        _awaitingHostInfo = NO;
+        _batteryLookupDone = NO;
+        _cachedBatteryLevel = -1;
+        _cachedBatteryString = @"--";
         _inputReportSize = 64;
         _inputReport = malloc(_inputReportSize);
         if (_inputReport) memset(_inputReport, 0, _inputReportSize);
 
         printf("[MXKeys] =========================================\n");
-        printf("[MXKeys] MX Keys Mini Host Switcher\n");
+        printf("[MXKeys] MX Keys Mini Host Switcher + Wine Killer\n");
         printf("[MXKeys] =========================================\n");
         fflush(stdout);
     }
@@ -184,19 +179,13 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 - (void)start {
     if (self.running) return;
     self.running = YES;
-
     printf("[MXKeys] Starting HID manager...\n");
     fflush(stdout);
-
     [self setupHIDManager];
-
-    printf("[MXKeys] Running - use menu bar to switch host\n");
-    fflush(stdout);
 }
 
 - (void)stop {
     self.running = NO;
-
     if (self.hidManager) {
         IOHIDManagerClose(self.hidManager, kIOHIDOptionsTypeNone);
         CFRelease(self.hidManager);
@@ -205,40 +194,29 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     self.hidDevice = NULL;
     self.deviceReady = NO;
     self.deviceConnected = NO;
+    self.deviceName = @"Not connected";
     self.inputReportRegistered = NO;
     self.changeHostIndexFound = NO;
-
-    if (self.inputReport) {
-        free(self.inputReport);
-        self.inputReport = NULL;
-    }
-
+    if (self.inputReport) { free(self.inputReport); self.inputReport = NULL; }
     printf("[MXKeys] Stopped\n");
     fflush(stdout);
 }
 
 - (void)setupHIDManager {
     self.hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
-
-    // Match ANY Logitech device - we filter by name in the callback
-    NSDictionary *criteria = @{
-        @"VendorID": @(LOGITECH_VID)
-    };
+    NSDictionary *criteria = @{ @"VendorID": @(LOGITECH_VID) };
     IOHIDManagerSetDeviceMatching(self.hidManager, (__bridge CFDictionaryRef)criteria);
-
-    IOHIDManagerRegisterDeviceMatchingCallback(self.hidManager,
-                                                HIDDeviceMatchingCallback,
-                                                (__bridge void *)self);
-
-    IOHIDManagerRegisterDeviceRemovalCallback(self.hidManager,
-                                               HIDDeviceRemovalCallback,
-                                               (__bridge void *)self);
-
+    IOHIDManagerRegisterDeviceMatchingCallback(self.hidManager, HIDDeviceMatchingCallback, (__bridge void *)self);
+    IOHIDManagerRegisterDeviceRemovalCallback(self.hidManager, HIDDeviceRemovalCallback, (__bridge void *)self);
     IOHIDManagerScheduleWithRunLoop(self.hidManager, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
-    IOHIDManagerOpen(self.hidManager, kIOHIDOptionsTypeNone);
-
-    printf("[MXKeys] Scanning for Logitech devices...\n");
-    fflush(stdout);
+    IOReturn r = IOHIDManagerOpen(self.hidManager, kIOHIDOptionsTypeNone);
+    if (r != kIOReturnSuccess) {
+        printf("[MXKeys] IOHIDManagerOpen failed (%d). Grant Input Monitoring.\n", r);
+        fflush(stdout);
+    } else {
+        printf("[MXKeys] Scanning for Logitech devices...\n");
+        fflush(stdout);
+    }
 }
 
 static void HIDDeviceMatchingCallback(void *context, IOReturn result, void *sender, IOHIDDeviceRef device) {
@@ -247,28 +225,17 @@ static void HIDDeviceMatchingCallback(void *context, IOReturn result, void *send
 
     CFStringRef productRef = IOHIDDeviceGetProperty(device, CFSTR(kIOHIDProductKey));
     CFNumberRef pidRef = IOHIDDeviceGetProperty(device, CFSTR(kIOHIDProductIDKey));
-
     NSString *name = productRef ? (__bridge NSString *)productRef : @"Unknown";
     int pid = 0;
     if (pidRef) CFNumberGetValue(pidRef, kCFNumberIntType, &pid);
 
-    self.foundDevices++;
-    printf("[MXKeys] Found HID device %d: %s (PID 0x%04X)\n",
-           self.foundDevices, [name UTF8String], pid);
+    // Strict PID match to MX Keys Mini. Fallback on name only if PID is unknown.
+    BOOL isMini = (pid == MX_KEYS_MINI_PID) || (pid == MX_KEYS_MINI_MAC_PID);
+    if (!isMini && pid != 0) return;
+    if (!isMini && ![name containsString:@"MX Keys Mini"]) return;
+    if (self.hidDevice != NULL) return;
 
-    // Match MX Keys Mini by name OR by PID
-    BOOL isMXKeysMini = [name containsString:@"MX Keys Mini"] ||
-                        [name containsString:@"MX Keys"] ||
-                        (pid == MX_KEYS_MINI_PID) ||
-                        (pid == MX_KEYS_MINI_MAC_PID);
-
-    if (!isMXKeysMini) {
-        fflush(stdout);
-        return;
-    }
-
-    printf("[MXKeys] ✅ Found MX Keys Mini: %s (PID 0x%04X)\n",
-           [name UTF8String], pid);
+    printf("[MXKeys] ✅ Found MX Keys Mini: %s (PID 0x%04X)\n", [name UTF8String], pid);
     fflush(stdout);
 
     self.hidDevice = device;
@@ -279,13 +246,13 @@ static void HIDDeviceMatchingCallback(void *context, IOReturn result, void *send
     [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
 
     [self registerInputReport:device];
-    [self discoverFeatures:device];
+    [self lookupChangeHost];
 }
 
 static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sender, IOHIDDeviceRef device) {
     MXKeysManager *self = (__bridge MXKeysManager *)context;
     if (device == self.hidDevice) {
-        printf("[MXKeys] ❌ Keyboard removed!\n");
+        printf("[MXKeys] ❌ Keyboard removed\n");
         self.hidDevice = NULL;
         self.deviceReady = NO;
         self.deviceConnected = NO;
@@ -293,9 +260,9 @@ static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sende
         self.changeHostIndex = 0;
         self.changeHostIndexFound = NO;
         self.batteryIndex = 0;
-        self.batteryLevel = -1;
-        self.batteryLevelString = @"--";
+        self.batteryLookupDone = NO;
         self.inputReportRegistered = NO;
+        // Keep battery cache so the menu doesn't blank during a switch.
         [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
         fflush(stdout);
     }
@@ -304,89 +271,122 @@ static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sende
 static void HIDInputReportCallback(void *context, IOReturn result, void *sender, IOHIDReportType type,
                                     uint32_t reportID, uint8_t *report, CFIndex reportLength) {
     MXKeysManager *self = (__bridge MXKeysManager *)context;
-    if (!self || reportLength < 4) return;
+    if (!self || reportLength < 5) return;
+    if (report[0] != HIDPP_REPORT_ID_LONG) return;
+    if (report[1] != DEVICE_INDEX_DIRECT) return;
 
-    printf("[MXKeys] 📥 Response (%ld bytes): ", (long)reportLength);
-    for (int i = 0; i < reportLength && i < 16; i++) printf("%02X ", report[i]);
+    printf("[MXKeys] HID++ [%2ld]: ", (long)reportLength);
+    for (int i = 0; i < reportLength && i < 12; i++) printf("%02X ", report[i]);
     printf("\n");
     fflush(stdout);
 
-    // HID++ 2.0 long report
-    if (report[0] != HIDPP_REPORT_ID_LONG) return;
-
-    uint8_t featureIndex = report[2];
-    uint8_t functionId = report[3] & 0x0F;   // low nibble = function
-    uint8_t swid = (report[3] >> 4) & 0x0F;  // high nibble = software id
-
+    // HID++ response: report[3] = (function << 4) | SWID.
+    // So the SWID is in the LOW nibble, not the high nibble. The template
+    // had this backwards, which discarded every reply.
+    uint8_t function = (report[3] >> 4) & 0x0F;
+    uint8_t swid     = report[3] & 0x0F;
     if (swid != SWID) return;
 
-    // ---- Response to feature lookup ----
-    if (self.awaitingHostIndex) {
-        // Function 0x00 = getFeature response
-        // report[4] = feature index (0 if not found)
+    // ---- Feature index replies on feature 0x00 (ROOT) ----
+    if (report[2] == 0x00) {
         uint8_t idx = report[4];
-        if (idx != 0x00 && idx != 0xFF) {
+
+        if (self.awaitingHostIndex) {
+            self.awaitingHostIndex = NO;
+            if (idx == 0 || idx == 0xFF) {
+                printf("[MXKeys] ChangeHost not present\n");
+                fflush(stdout);
+                return;
+            }
             self.changeHostIndex = idx;
             self.changeHostIndexFound = YES;
-            printf("[MXKeys] ✅ ChangeHost feature index: 0x%02X\n", idx);
-        } else {
-            printf("[MXKeys] ⚠️ ChangeHost feature not found on this device\n");
+            printf("[MXKeys] ChangeHost index: 0x%02X\n", idx);
+            fflush(stdout);
+            // Now chain the battery lookup — 500 ms later so the keyboard
+            // isn't still busy with the first reply.
+            [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
+            return;
         }
-        self.awaitingHostIndex = NO;
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
-        fflush(stdout);
-        return;
-    }
 
-    if (self.awaitingBatteryIndex) {
-        uint8_t idx = report[4];
-        if (idx != 0x00 && idx != 0xFF) {
+        if (self.awaitingBatteryIndex) {
+            self.awaitingBatteryIndex = NO;
+            if (idx == 0 || idx == 0xFF) {
+                if (self.batteryIsUnified) {
+                    // Fall back from 0x1004 to 0x1000
+                    printf("[MXKeys] UnifiedBattery not present, trying BatteryStatus (0x1000)\n");
+                    fflush(stdout);
+                    self.batteryIsUnified = NO;
+                    self.awaitingBatteryIndex = YES;
+                    uint8_t cmd[20] = {0};
+                    cmd[0] = HIDPP_REPORT_ID_LONG;
+                    cmd[1] = DEVICE_INDEX_DIRECT;
+                    cmd[2] = 0x00;
+                    cmd[3] = (uint8_t)((FUNCTION_GET_FEATURE << 4) | SWID);
+                    cmd[4] = 0x10;
+                    cmd[5] = 0x00;
+                    IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
+                    return;
+                }
+                printf("[MXKeys] No battery feature on this device\n");
+                self.batteryLookupDone = YES;
+                fflush(stdout);
+                return;
+            }
             self.batteryIndex = idx;
-            printf("[MXKeys] ✅ Battery feature index: 0x%02X\n", idx);
-        } else {
-            printf("[MXKeys] ⚠️ Battery feature not found\n");
+            self.batteryLookupDone = YES;
+            printf("[MXKeys] Battery index: 0x%02X (feature 0x%04X)\n",
+                   idx, self.batteryIsUnified ? 0x1004 : 0x1000);
+            fflush(stdout);
+            [self performSelector:@selector(readBattery) withObject:nil afterDelay:0.3];
+            return;
         }
-        self.awaitingBatteryIndex = NO;
+    }
+
+    // ---- Host info reply (ChangeHost feature) ----
+    if (self.awaitingHostInfo && self.changeHostIndex != 0 &&
+        report[2] == self.changeHostIndex && function == FUNCTION_GET_HOST_INFO) {
+        self.awaitingHostInfo = NO;
+        uint8_t count = report[4];
+        uint8_t current = report[5];
+        printf("[MXKeys] Host info: %d hosts, currently on slot %d (host %d)\n",
+               count, current, current + 1);
         fflush(stdout);
         return;
     }
 
-    // ---- Response to getHost / setHost ----
-    if (featureIndex == self.changeHostIndex && functionId == FUNCTION_GET_HOST) {
-        uint8_t currentHost = report[4];
-        printf("[MXKeys] 🔘 Current host: %d\n", currentHost + 1);
-        fflush(stdout);
-        return;
-    }
+    // ---- Battery value reply ----
+    if (self.awaitingBatteryValue && self.batteryIndex != 0 && report[2] == self.batteryIndex) {
+        uint8_t raw = report[4];
+        BOOL ok = NO;
+        int pct = -1;
 
-    // ---- Response to battery ----
-    if (featureIndex == self.batteryIndex && functionId == FUNCTION_GET_BATTERY) {
-        // UnifiedBattery (0x1004) response:
-        // report[4] = battery level (0-100) OR level enum depending on capability
-        // report[5] = flags
-        // report[6] = status
-        uint8_t level = report[4];
-        uint8_t flags = report[5];
-
-        // Bit 7 of flags indicates "state of charge" is available
-        BOOL hasPercentage = (flags & 0x80) != 0;
-
-        if (hasPercentage && level <= 100) {
-            self.batteryLevel = level;
-            self.batteryLevelString = [NSString stringWithFormat:@"%d%%", level];
-            printf("[MXKeys] 🔋 Battery: %d%%\n", level);
-        } else {
-            // Level enum: 0=empty, 1=critical, 2=low, 4=good, 8=full
-            NSString *levelStr = @"--";
-            if (level == 1) levelStr = @"Critical";
-            else if (level == 2) levelStr = @"Low";
-            else if (level == 4) levelStr = @"Good";
-            else if (level == 8) levelStr = @"Full";
-            self.batteryLevel = -1;
-            self.batteryLevelString = levelStr;
-            printf("[MXKeys] 🔋 Battery level: %s\n", [levelStr UTF8String]);
+        if (self.batteryIsUnified) {
+            // Keyboard's 0x1004 layout differs from the mouse's. It reports the
+            // raw percentage directly in byte 4, without setting a "valid" flag
+            // in byte 5. So accept any value 1..100 as a percentage.
+            if (raw > 0 && raw <= 100) {
+                pct = raw;
+                ok = YES;
+            }
         }
 
+        if (ok) {
+            int snapped;
+            if (pct >= 90) snapped = 100;
+            else if (pct >= 65) snapped = 80;
+            else if (pct >= 30) snapped = 50;
+            else snapped = 10;
+            self.batteryLevel = snapped;
+            self.batteryLevelString = [NSString stringWithFormat:@"%d%%", snapped];
+            self.cachedBatteryLevel = snapped;
+            self.cachedBatteryString = self.batteryLevelString;
+            printf("[MXKeys] Battery: %d%% (raw %d)\n", snapped, pct);
+        } else {
+            printf("[MXKeys] Battery read inconclusive, keeping last\n");
+        }
+
+        self.awaitingBatteryValue = NO;
         [[NSNotificationCenter defaultCenter] postNotificationName:@"DeviceUpdated" object:nil];
         fflush(stdout);
         return;
@@ -395,100 +395,96 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 
 - (void)registerInputReport:(IOHIDDeviceRef)device {
     if (self.inputReportRegistered || !self.inputReport) return;
-
-    IOHIDDeviceRegisterInputReportCallback(
-        device,
-        self.inputReport,
-        self.inputReportSize,
-        HIDInputReportCallback,
-        (__bridge void *)self
-    );
+    IOHIDDeviceRegisterInputReportCallback(device, self.inputReport, self.inputReportSize,
+                                            HIDInputReportCallback, (__bridge void *)self);
     self.inputReportRegistered = YES;
-    printf("[MXKeys] 📡 Input report callback registered\n");
+    printf("[MXKeys] Input report callback registered\n");
     fflush(stdout);
 }
 
-- (void)discoverFeatures:(IOHIDDeviceRef)device {
-    printf("[MXKeys] 🔍 Discovering features...\n");
+- (void)lookupChangeHost {
+    if (!self.hidDevice) return;
+    if (self.changeHostIndex != 0) return;
+    if (self.awaitingHostIndex) return;
+
+    printf("[MXKeys] Looking up CHANGE_HOST (0x1814)\n");
     fflush(stdout);
 
-    // -------- Look up ChangeHost (0x1814) --------
     self.awaitingHostIndex = YES;
-
-    uint8_t lookupHost[20] = {0};
-    lookupHost[0] = HIDPP_REPORT_ID_LONG;
-    lookupHost[1] = DEVICE_INDEX_DIRECT;
-    lookupHost[2] = 0x00;  // IRoot
-    lookupHost[3] = (uint8_t)((FUNCTION_GET_FEATURE << 4) | SWID);
-    lookupHost[4] = 0x18;  // feature id high byte
-    lookupHost[5] = 0x14;  // feature id low byte
-
-    printf("[MXKeys] 📤 Lookup CHANGE_HOST (0x1814)\n");
-    fflush(stdout);
-
-    IOReturn result = IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, 0x11, lookupHost, 20);
-    if (result != kIOReturnSuccess) {
-        printf("[MXKeys] ⚠️ ChangeHost lookup failed (%d)\n", result);
-        self.awaitingHostIndex = NO;
-    }
-    usleep(300000);
-
-    // -------- Look up UnifiedBattery (0x1004) --------
-    self.awaitingBatteryIndex = YES;
-
-    uint8_t lookupBattery[20] = {0};
-    lookupBattery[0] = HIDPP_REPORT_ID_LONG;
-    lookupBattery[1] = DEVICE_INDEX_DIRECT;
-    lookupBattery[2] = 0x00;
-    lookupBattery[3] = (uint8_t)((FUNCTION_GET_FEATURE << 4) | SWID);
-    lookupBattery[4] = 0x10;
-    lookupBattery[5] = 0x04;
-
-    printf("[MXKeys] 📤 Lookup UNIFIED_BATTERY (0x1004)\n");
-    fflush(stdout);
-
-    result = IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, 0x11, lookupBattery, 20);
-    if (result != kIOReturnSuccess) {
-        printf("[MXKeys] ⚠️ Battery lookup failed (%d)\n", result);
-        self.awaitingBatteryIndex = NO;
-    }
-    usleep(300000);
-
-    // Give responses time to arrive, then read battery
-    [self performSelector:@selector(readBattery) withObject:nil afterDelay:1.5];
-    [self performSelector:@selector(readCurrentHost) withObject:nil afterDelay:0.5];
-}
-
-- (void)readCurrentHost {
-    if (!self.deviceReady || !self.hidDevice || !self.changeHostIndexFound) return;
-
     uint8_t cmd[20] = {0};
     cmd[0] = HIDPP_REPORT_ID_LONG;
     cmd[1] = DEVICE_INDEX_DIRECT;
-    cmd[2] = self.changeHostIndex;
-    cmd[3] = (uint8_t)((FUNCTION_GET_HOST << 4) | SWID);
+    cmd[2] = 0x00;
+    cmd[3] = (uint8_t)((FUNCTION_GET_FEATURE << 4) | SWID);
+    cmd[4] = 0x18;
+    cmd[5] = 0x14;
 
-    printf("[MXKeys] 📤 Querying current host\n");
+    IOReturn r = IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
+    if (r != kIOReturnSuccess) {
+        printf("[MXKeys] ChangeHost write failed: %d\n", r);
+        self.awaitingHostIndex = NO;
+        fflush(stdout);
+    }
+}
+
+- (void)lookupBattery {
+    if (!self.hidDevice) return;
+    if (self.batteryIndex != 0) return;
+    if (self.awaitingBatteryIndex) return;
+    if (self.batteryLookupDone) return;
+
+    self.batteryIsUnified = YES;
+    printf("[MXKeys] Looking up UNIFIED_BATTERY (0x1004)\n");
     fflush(stdout);
 
-    IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
+    self.awaitingBatteryIndex = YES;
+    uint8_t cmd[20] = {0};
+    cmd[0] = HIDPP_REPORT_ID_LONG;
+    cmd[1] = DEVICE_INDEX_DIRECT;
+    cmd[2] = 0x00;
+    cmd[3] = (uint8_t)((FUNCTION_GET_FEATURE << 4) | SWID);
+    cmd[4] = 0x10;
+    cmd[5] = 0x04;
+
+    IOReturn r = IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
+    if (r != kIOReturnSuccess) {
+        printf("[MXKeys] Battery write failed: %d\n", r);
+        self.awaitingBatteryIndex = NO;
+        fflush(stdout);
+    }
 }
 
 - (void)readBattery {
     if (!self.deviceReady || !self.hidDevice) return;
-    if (self.batteryIndex == 0) {
-        printf("[MXKeys] ⚠️ Battery feature index unknown, skipping\n");
-        return;
-    }
+    if (self.batteryIndex == 0) return;
 
+    self.awaitingBatteryValue = YES;
+
+    uint8_t fn = self.batteryIsUnified ? FUNCTION_GET_BATTERY_UNIFIED
+                                        : FUNCTION_GET_BATTERY_STATUS;
     uint8_t cmd[20] = {0};
     cmd[0] = HIDPP_REPORT_ID_LONG;
     cmd[1] = DEVICE_INDEX_DIRECT;
     cmd[2] = self.batteryIndex;
-    cmd[3] = (uint8_t)((FUNCTION_GET_BATTERY << 4) | SWID);
+    cmd[3] = (uint8_t)((fn << 4) | SWID);
 
-    printf("[MXKeys] 📤 Battery request\n");
-    fflush(stdout);
+    IOReturn r = IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
+    if (r != kIOReturnSuccess) {
+        self.awaitingBatteryValue = NO;
+    }
+}
+
+- (void)readCurrentHost {
+    if (!self.deviceReady || !self.hidDevice || !self.changeHostIndexFound) return;
+    if (self.awaitingHostInfo) return;
+
+    self.awaitingHostInfo = YES;
+    uint8_t cmd[20] = {0};
+    cmd[0] = HIDPP_REPORT_ID_LONG;
+    cmd[1] = DEVICE_INDEX_DIRECT;
+    cmd[2] = self.changeHostIndex;
+    cmd[3] = (uint8_t)((FUNCTION_GET_HOST_INFO << 4) | SWID);
+    cmd[4] = 0x00;
 
     IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
 }
@@ -498,51 +494,52 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         printf("[MXKeys] ❌ App not running\n");
         return;
     }
-
     if (!self.deviceReady || !self.hidDevice) {
         printf("[MXKeys] ❌ Keyboard not connected\n");
         return;
     }
-
     if (!self.changeHostIndexFound) {
-        printf("[MXKeys] ❌ ChangeHost feature index not discovered yet - try again in a moment\n");
+        printf("[MXKeys] ❌ ChangeHost feature not discovered yet\n");
         return;
     }
-
     if (channel < 0 || channel > 2) {
         printf("[MXKeys] ❌ Invalid channel: %d\n", channel);
         return;
     }
 
     self.switching = YES;
-
     uint8_t cmd[20] = {0};
     cmd[0] = HIDPP_REPORT_ID_LONG;
     cmd[1] = DEVICE_INDEX_DIRECT;
     cmd[2] = self.changeHostIndex;
     cmd[3] = (uint8_t)((FUNCTION_SET_HOST << 4) | SWID);
-    cmd[4] = (uint8_t)channel;  // 0 = host 1, 1 = host 2, 2 = host 3
+    cmd[4] = (uint8_t)channel;
     cmd[5] = 0x00;
 
-    printf("[MXKeys] 📤 Switch to host %d: ", channel + 1);
-    for (int i = 0; i < 8; i++) printf("%02X ", cmd[i]);
-    printf("\n");
+    printf("[MXKeys] Switching to host %d\n", channel + 1);
     fflush(stdout);
 
     IOReturn result = IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
     if (result == kIOReturnSuccess) {
-        printf("[MXKeys] ✅ Switch to host %d sent!\n", channel + 1);
+        printf("[MXKeys] ✅ Switch to host %d sent\n", channel + 1);
     } else {
-        printf("[MXKeys] ❌ Send failed (error: %d)\n", result);
+        printf("[MXKeys] ❌ Send failed (%d)\n", result);
     }
-
     self.switching = NO;
     fflush(stdout);
 }
 
-- (void)dealloc {
-    [self stop];
+// Cache-aware accessors
+- (int)batteryLevel {
+    if (_batteryLevel >= 0) return _batteryLevel;
+    return self.cachedBatteryLevel;
 }
+- (NSString *)batteryLevelString {
+    if (_batteryLevel >= 0) return _batteryLevelString;
+    return self.cachedBatteryString;
+}
+
+- (void)dealloc { [self stop]; }
 
 @end
 EOF
@@ -556,6 +553,13 @@ EOF
 cat > "src/AppDelegate.m" << 'EOF'
 #import "AppDelegate.h"
 #import "MXKeysManager.h"
+#import <Carbon/Carbon.h>
+
+// Hotkey: Cmd + Shift + F12
+#define HOTKEY_KEYCODE  kVK_F12
+#define HOTKEY_MODS     (cmdKey | shiftKey)
+#define HOTKEY_ID       1
+#define HOTKEY_SIG      'WnKl'
 
 @interface AppDelegate ()
 @property (nonatomic, strong) NSStatusItem *statusItem;
@@ -564,7 +568,11 @@ cat > "src/AppDelegate.m" << 'EOF'
 @property (nonatomic, strong) NSMenuItem *deviceMenuItem;
 @property (nonatomic, strong) NSMenuItem *batteryMenuItem;
 @property (nonatomic, assign) BOOL isActive;
+@property (nonatomic, assign) EventHotKeyRef hotKeyRef;
+@property (nonatomic, assign) EventHandlerRef hotKeyHandlerRef;
 @end
+
+static OSStatus WineHotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent, void *userData);
 
 @implementation AppDelegate
 
@@ -607,23 +615,28 @@ cat > "src/AppDelegate.m" << 'EOF'
                                                    keyEquivalent:@""];
     [menu addItem:switchTitle];
 
-    NSMenuItem *switch1 = [[NSMenuItem alloc] initWithTitle:@"Switch to Host 1"
-                                                      action:@selector(switchToHost1:)
-                                               keyEquivalent:@"1"];
-    switch1.target = self;
-    [menu addItem:switch1];
+    NSMenuItem *h1 = [[NSMenuItem alloc] initWithTitle:@"Switch to Host 1"
+                                                action:@selector(switchToHost1:)
+                                         keyEquivalent:@"1"];
+    h1.target = self; [menu addItem:h1];
 
-    NSMenuItem *switch2 = [[NSMenuItem alloc] initWithTitle:@"Switch to Host 2"
-                                                      action:@selector(switchToHost2:)
-                                               keyEquivalent:@"2"];
-    switch2.target = self;
-    [menu addItem:switch2];
+    NSMenuItem *h2 = [[NSMenuItem alloc] initWithTitle:@"Switch to Host 2"
+                                                action:@selector(switchToHost2:)
+                                         keyEquivalent:@"2"];
+    h2.target = self; [menu addItem:h2];
 
-    NSMenuItem *switch3 = [[NSMenuItem alloc] initWithTitle:@"Switch to Host 3"
-                                                      action:@selector(switchToHost3:)
-                                               keyEquivalent:@"3"];
-    switch3.target = self;
-    [menu addItem:switch3];
+    NSMenuItem *h3 = [[NSMenuItem alloc] initWithTitle:@"Switch to Host 3"
+                                                action:@selector(switchToHost3:)
+                                         keyEquivalent:@"3"];
+    h3.target = self; [menu addItem:h3];
+
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem *killWine = [[NSMenuItem alloc] initWithTitle:@"Kill Wine Now  (⌘⇧F12)"
+                                                       action:@selector(killWineProcesses)
+                                                keyEquivalent:@""];
+    killWine.target = self;
+    [menu addItem:killWine];
 
     [menu addItem:[NSMenuItem separatorItem]];
 
@@ -635,7 +648,38 @@ cat > "src/AppDelegate.m" << 'EOF'
 
     self.statusItem.menu = menu;
 
+    [self registerWineHotKey];
+
     [self performSelector:@selector(autoStart) withObject:nil afterDelay:0.5];
+}
+
+- (void)registerWineHotKey {
+    EventTypeSpec eventType;
+    eventType.eventClass = kEventClassKeyboard;
+    eventType.eventKind  = kEventHotKeyPressed;
+
+    InstallApplicationEventHandler(&WineHotKeyHandler,
+                                   1,
+                                   &eventType,
+                                   (__bridge void *)self,
+                                   &_hotKeyHandlerRef);
+
+    EventHotKeyID hotKeyID;
+    hotKeyID.signature = HOTKEY_SIG;
+    hotKeyID.id        = HOTKEY_ID;
+
+    OSStatus status = RegisterEventHotKey(HOTKEY_KEYCODE,
+                                          HOTKEY_MODS,
+                                          hotKeyID,
+                                          GetApplicationEventTarget(),
+                                          0,
+                                          &_hotKeyRef);
+    if (status == noErr) {
+        printf("[MXKeys] ✅ Registered Cmd+Shift+F12 for Wine killer\n");
+    } else {
+        printf("[MXKeys] ⚠️ Hotkey registration failed (%d) — another app may own Cmd+Shift+F12\n", (int)status);
+    }
+    fflush(stdout);
 }
 
 - (void)autoStart {
@@ -661,21 +705,62 @@ cat > "src/AppDelegate.m" << 'EOF'
 - (void)switchToHost2:(id)sender { [self.keysManager switchToChannelDirect:1]; }
 - (void)switchToHost3:(id)sender { [self.keysManager switchToChannelDirect:2]; }
 
+- (void)killWineProcesses {
+    printf("[MXKeys] 🔪 Killing Wine processes...\n");
+    fflush(stdout);
+
+    NSString *username = NSUserName();
+    NSString *cmd = [NSString stringWithFormat:
+        @"pkill -9 -U %@ wineserver wine wine64 wine-preloader wine64-preloader 2>/dev/null; "
+        @"pgrep -U %@ -f \".exe\" | xargs kill -9 2>/dev/null",
+        username, username];
+
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/bin/bash";
+    task.arguments = @[@"-c", cmd];
+
+    NSPipe *pipe = [NSPipe pipe];
+    task.standardOutput = pipe;
+    task.standardError = pipe;
+    NSFileHandle *fh = [pipe fileHandleForReading];
+
+    [task launch];
+    [task waitUntilExit];
+
+    NSData *data = [fh readDataToEndOfFile];
+    NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (output.length > 0) {
+        printf("[MXKeys] Kill output: %s\n", [output UTF8String]);
+        fflush(stdout);
+    }
+    printf("[MXKeys] Wine kill exit status: %d\n", [task terminationStatus]);
+    fflush(stdout);
+}
+
 - (void)updateDisplay {
     if (self.keysManager.deviceConnected) {
-        self.statusItem.button.title = @"⌨️ --%";
+        NSString *b = self.keysManager.batteryLevelString ?: @"--%";
+        self.statusItem.button.title = [NSString stringWithFormat:@"⌨️ %@", b];
         self.deviceMenuItem.title = [NSString stringWithFormat:@"Device: %@", self.keysManager.deviceName];
-        self.batteryMenuItem.title = [NSString stringWithFormat:@"Battery: %@", self.keysManager.batteryLevelString];
+        self.batteryMenuItem.title = [NSString stringWithFormat:@"Battery: %@", b];
     } else {
         self.statusItem.button.title = @"⌨️ --%";
         self.deviceMenuItem.title = @"Device: Not connected";
         self.batteryMenuItem.title = @"Battery: --";
     }
+    self.statusItem.button.alternateTitle = self.statusItem.button.title;
 }
 
 - (void)quitApp:(id)sender {
+    if (self.hotKeyRef) { UnregisterEventHotKey(self.hotKeyRef); self.hotKeyRef = NULL; }
+    if (self.hotKeyHandlerRef) { RemoveEventHandler(self.hotKeyHandlerRef); self.hotKeyHandlerRef = NULL; }
     [self.keysManager stop];
     [NSApp terminate:nil];
+}
+
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    if (self.hotKeyRef) UnregisterEventHotKey(self.hotKeyRef);
+    if (self.hotKeyHandlerRef) RemoveEventHandler(self.hotKeyHandlerRef);
 }
 
 - (void)dealloc {
@@ -683,11 +768,20 @@ cat > "src/AppDelegate.m" << 'EOF'
 }
 
 @end
-EOF
 
-cat > "src/main.m" << 'EOF'
-#import <Cocoa/Cocoa.h>
-#import "AppDelegate.h"
+static OSStatus WineHotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent, void *userData) {
+    AppDelegate *self = (__bridge AppDelegate *)userData;
+    if (!self) return noErr;
+
+    EventHotKeyID hkID;
+    GetEventParameter(theEvent, kEventParamDirectObject, typeEventHotKeyID,
+                      NULL, sizeof(hkID), NULL, &hkID);
+
+    if (hkID.signature == HOTKEY_SIG && hkID.id == HOTKEY_ID) {
+        [self killWineProcesses];
+    }
+    return noErr;
+}
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
@@ -701,10 +795,10 @@ int main(int argc, const char * argv[]) {
 EOF
 
 # ===============================================
-# BUILD APP BUNDLE
+# BUILD
 # ===============================================
 
-echo -e "${CYAN}🔨 Compiling MX Keys Mini Switcher...${NC}"
+echo -e "${CYAN}🔨 Compiling MX Keys Mini + Wine Killer...${NC}"
 
 APP_BUNDLE="$APP_NAME.app"
 rm -rf "$APP_BUNDLE"
@@ -715,30 +809,21 @@ cat > "Info.plist" << EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>
-    <string>$APP_NAME</string>
-    <key>CFBundleDisplayName</key>
-    <string>$APP_NAME</string>
-    <key>CFBundleIdentifier</key>
-    <string>$BUNDLE_ID</string>
-    <key>CFBundleVersion</key>
-    <string>1.0</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleExecutable</key>
-    <string>$APP_NAME</string>
-    <key>CFBundleIconFile</key>
-    <string>app_icon</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>11.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSHighResolutionCapable</key>
-    <true/>
+    <key>CFBundleName</key><string>$APP_NAME</string>
+    <key>CFBundleDisplayName</key><string>$APP_NAME</string>
+    <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+    <key>CFBundleVersion</key><string>1.0</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleExecutable</key><string>$APP_NAME</string>
+    <key>CFBundleIconFile</key><string>app_icon</string>
+    <key>LSMinimumSystemVersion</key><string>11.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>MX Keys Switch needs Bluetooth to control your Logitech keyboard</string>
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>MX Keys Switch needs Input Monitoring to talk to your Logitech keyboard via HID++.</string>
 </dict>
 </plist>
 EOF
@@ -747,15 +832,11 @@ cp "Info.plist" "$APP_BUNDLE/Contents/"
 
 if [ -f "public/app_icon.icns" ]; then
     cp "public/app_icon.icns" "$APP_BUNDLE/Contents/Resources/app_icon.icns"
-    echo "✅ App icon added to bundle (ICNS)"
-elif [ -f "public/app_icon.png" ]; then
-    cp "public/app_icon.png" "$APP_BUNDLE/Contents/Resources/app_icon.png"
-    echo "✅ App icon added to bundle (PNG)"
+    echo "✅ App icon added"
 fi
 
-echo -e "${CYAN}Compiling...${NC}"
 clang -framework Cocoa -framework Foundation -framework AppKit \
-      -framework CoreGraphics -framework IOKit \
+      -framework CoreGraphics -framework IOKit -framework Carbon \
       -fobjc-arc -Wno-deprecated-declarations \
       -mmacosx-version-min=11.0 \
       -o "$APP_BUNDLE/Contents/MacOS/$APP_NAME" src/*.m 2> build_errors.log
@@ -769,58 +850,28 @@ else
     exit 1
 fi
 
-codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+if security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
+    echo -e "${CYAN}🔏 Signing with $SIGN_IDENTITY${NC}"
+    codesign --force --deep --sign "$SIGN_IDENTITY" \
+             --identifier "$BUNDLE_ID" \
+             --options runtime \
+             "$APP_BUNDLE" 2>/dev/null || {
+        codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP_BUNDLE" 2>/dev/null || true
+    }
+else
+    codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP_BUNDLE" 2>/dev/null || true
+fi
 xattr -cr "$APP_BUNDLE"
 
-cp -R "$APP_BUNDLE" "$HOME/Applications/" 2>/dev/null || true
-cp -R "$APP_BUNDLE" "$HOME/Desktop/" 2>/dev/null || true
+rm -rf "$HOME/Applications/$APP_BUNDLE"
+mkdir -p "$HOME/Applications"
+cp -R "$APP_BUNDLE" "$HOME/Applications/"
 
-echo -e "\n${GREEN}✅ MX Keys Mini Switcher compiled!${NC}"
-echo -e "${CYAN}"
-echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║                     WHAT THIS DOES                            ║"
-echo "╠════════════════════════════════════════════════════════════════╣"
-echo "║ 1. ✅ Connects to MX Keys Mini over Bluetooth                ║"
-echo "║ 2. ✅ Dynamically discovers ChangeHost feature index         ║"
-echo "║ 3. ✅ Switches host via menu bar (Host 1 / 2 / 3)            ║"
-echo "║ 4. ✅ Shows device name and battery level in menu            ║"
-echo "║ 5. ✅ No edge detection (keyboard has no cursor)             ║"
-echo "║ 6. ✅ No USB receiver needed                                 ║"
-echo "╠════════════════════════════════════════════════════════════════╣"
-echo "║ TO USE:                                                       ║"
-echo "║ 1. Grant Input Monitoring permission                         ║"
-echo "║ 2. Click ⌨️ in menu bar                                       ║"
-echo "║ 3. Use 'Switch to Host 1/2/3' to change host                 ║"
-echo "║ 4. Check console output for debug info                       ║"
-echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
-echo "⚠️  Grant Input Monitoring permission:"
-echo "   System Settings → Privacy & Security → Input Monitoring"
-echo "   Add your Terminal or the app, toggle ON"
-echo -e "${NC}"
+echo -e "${GREEN}✅ MX Keys Mini + Wine Killer built${NC}"
+echo ""
+echo "  ⌨️  Menu bar: switch host 1/2/3, kill Wine, quit"
+echo "  ⌘⇧F12: kills Wine processes from anywhere"
+echo ""
 
-open "$APP_BUNDLE"
-
-# What's different from the mouse version
-# Feature	Mouse version	Keyboard version
-# Edge detection	Watches cursor position	Removed — no cursor on a keyboard
-# Feature index	Hardcoded 0x18 fallback	Discovered dynamically from IRoot response only
-# Battery %	Assumed percentage	Handles both percentage and level enum (Critical/Low/Good/Full)
-# Device match	Name contains "MX Master"	Name contains "MX Keys Mini" or PID 0xB369/0xB36A
-# Menu icon	🖱️ 85%	⌨️ (static) + battery as separate menu row
-# Trigger	Auto on edge	Manual only via menu bar
-# What to expect when you run it
-#     The script builds the app and launches it. A ⌨️ icon appears in the menu bar.
-#     Watch the terminal output. You should see:
-#         Found MX Keys Mini: MX Keys Mini (PID 0xB369)
-#         ✅ ChangeHost feature index: 0xXX (whatever index your firmware uses)
-#         🔋 Battery: N% or 🔋 Battery level: Good
-
-#     If ChangeHost feature not found appears, the feature lookup failed — make sure the keyboard is connected via Bluetooth, not the Logi Bolt receiver. HID++ 2.0 long reports work reliably over Bluetooth but the Bolt receiver may need a different report path.
-#     Use the menu bar → Switch to Host 1 / 2 / 3 to change host.
-
-# Known caveats
-#     Battery percentage may not appear. The MX Keys Mini's UnifiedBattery feature often only reports a level enum, not a percentage. The app handles this and shows Critical / Low / Good / Full instead. If it shows --, the keyboard's battery is being managed by macOS natively and not exposed over HID++.
-#     Feature index discovery timing. The lookup happens once when the keyboard connects. If the keyboard is asleep when you launch the app, discovery will fail. Wake the keyboard, then toggle Stop/Start in the menu.
-#     Host switching is one-way. HID++ can tell the keyboard which host to connect to, but the keyboard only sends the switch command if the currently active host is the one issuing it. This means: to switch back from Host 2 to Host 1, you need this app running on Host 1 — which won't work if the keyboard is currently connected to Host 2. For true two-way Flow behavior, you'd need the logitech-flow-kvm architecture where one machine acts as the leader and tells the others.
-
+open "$HOME/Applications/$APP_BUNDLE"
