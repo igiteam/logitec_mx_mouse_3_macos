@@ -12,7 +12,7 @@
 #define CHANNEL_MIN 0
 #define CHANNEL_MAX 2
 
-#define EDGE_THRESHOLD 5
+#define EDGE_THRESHOLD 1
 #define LOGITECH_VID 0x046D
 
 #define HIDPP_REPORT_ID_LONG 0x11

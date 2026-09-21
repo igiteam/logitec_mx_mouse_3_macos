@@ -1,6 +1,6 @@
 #!/bin/bash
 # MX Master 3 - Offline Flow Switcher for macOS
-# CAROUSEL EDGES + TOP BUTTON 1/2/3 + BATTERY + STABLE SIGNING
+# TOP BUTTON 1/2/3 + AUTO-DETECTED EDGES + BATTERY + STABLE SIGNING
 
 set -e
 
@@ -13,7 +13,7 @@ NC='\033[0m'
 echo -e "${CYAN}"
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║      MX MASTER 3 - OFFLINE FLOW SWITCHER FOR MACOS           ║"
-echo "║   CAROUSEL EDGES + TOP BUTTON 1/2/3 + BATTERY                ║"
+echo "║   TOP BUTTON 1/2/3 + AUTO-CHANNEL EDGES + BATTERY            ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
@@ -30,7 +30,7 @@ cd "$APP_NAME" || exit
 # ICON
 # ===============================================
 echo -e "${CYAN}🎨 Downloading icon...${NC}"
-ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/main/logitec-mx-keys-mini.png"
+ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/main/logitec-mouse-mx-3.png"
 curl -s -L "$ICON_URL" -o "public/app_icon.png"
 
 if [ -f "public/app_icon.png" ] && [ -s "public/app_icon.png" ]; then
@@ -71,6 +71,7 @@ cat > "src/MXFlowManager.h" << 'EOF'
 @property (nonatomic, assign, readonly) int batteryLevel;
 @property (nonatomic, strong, readonly) NSString *batteryString;
 @property (nonatomic, assign, readonly) BOOL deviceReady;
+@property (nonatomic, assign, readonly) int myChannel;   // auto-detected
 - (void)switchToChannelDirect:(int)channel;
 @end
 EOF
@@ -89,9 +90,8 @@ cat > "src/MXFlowManager.m" << 'EOF'
 
 #define CHANNEL_MIN 0
 #define CHANNEL_MAX 2
-#define CHANNEL_DEFAULT 0   // this Mac is usually channel 0
 
-#define EDGE_THRESHOLD 5
+#define EDGE_THRESHOLD 1
 #define LOGITECH_VID 0x046D
 
 #define HIDPP_REPORT_ID_LONG 0x11
@@ -103,10 +103,12 @@ cat > "src/MXFlowManager.m" << 'EOF'
 #define FEATURE_BATTERY_STATUS  0x1000
 #define FEATURE_CHANGE_HOST     0x1814
 
-#define FUNCTION_GET_FEATURE 0x00
-#define FUNCTION_SET_HOST    0x01
-#define FUNCTION_GET_BATTERY_UNIFIED 0x01  // 0x1004 get_status
-#define FUNCTION_GET_BATTERY_STATUS  0x00  // 0x1000 get_battery_level_status
+#define FUNCTION_GET_FEATURE    0x00
+#define FUNCTION_SET_HOST       0x01
+#define FUNCTION_GET_HOST_INFO  0x00   // ChangeHost (0x1814) getHostInfo
+
+#define FUNCTION_GET_BATTERY_UNIFIED 0x01
+#define FUNCTION_GET_BATTERY_STATUS  0x00
 
 // Confirmed from raw dump on MX Master 3:
 //   toggle event: 11 FF 0E 10 <state>   state flips 0/1 on every press
@@ -128,15 +130,15 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic, strong) NSTimer *batteryTimer;
 @property (nonatomic, assign) CGRect screenBounds;
-@property (nonatomic, assign) int currentChannel;
 @property (nonatomic, assign) IOHIDDeviceRef hidDevice;
 @property (nonatomic, assign) IOHIDManagerRef hidManager;
 @property (nonatomic, assign, readwrite) BOOL deviceReady;
 @property (nonatomic, assign) uint8_t changeHostIndex;
 @property (nonatomic, assign) uint8_t batteryIndex;
-@property (nonatomic, assign) BOOL batteryIsUnified;    // YES = 0x1004, NO = 0x1000
+@property (nonatomic, assign) BOOL batteryIsUnified;
 @property (nonatomic, assign, readwrite) int batteryLevel;
 @property (nonatomic, strong, readwrite) NSString *batteryString;
+@property (nonatomic, assign, readwrite) int myChannel;   // -1 = unknown yet
 @property (nonatomic, assign) BOOL switching;
 @property (nonatomic, assign) BOOL awaitingBatteryValue;
 @property (nonatomic, assign) uint8_t *inputReport;
@@ -146,6 +148,10 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, assign) BOOL awaitingHostIndex;
 @property (nonatomic, assign) BOOL awaitingBatteryIndex;
 @property (nonatomic, assign) BOOL batteryLookupDone;
+@property (nonatomic, assign) BOOL edgeArmed;
+
+// Host info probe — we send one getHostInfo request and read the reply.
+@property (nonatomic, assign) BOOL awaitingHostInfo;
 
 // Click tracking
 @property (nonatomic, assign) int clickCount;
@@ -162,18 +168,20 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @synthesize batteryLevel = _batteryLevel;
 @synthesize batteryString = _batteryString;
 @synthesize deviceReady = _deviceReady;
+@synthesize myChannel = _myChannel;
 
 - (instancetype)init {
     self = [super init];
     if (self) {
         _running = NO;
-        _currentChannel = CHANNEL_DEFAULT;
         _deviceReady = NO;
         _changeHostIndex = 0;
+        _edgeArmed = YES;
         _batteryIndex = 0;
         _batteryIsUnified = NO;
         _batteryLevel = -1;
         _batteryString = @"--%";
+        _myChannel = -1;
         _switching = NO;
         _awaitingBatteryValue = NO;
         _inputReportRegistered = NO;
@@ -184,6 +192,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         _lastPressTime = 0;
         _awaitingHostIndex = NO;
         _awaitingBatteryIndex = NO;
+        _awaitingHostInfo = NO;
         _batteryLookupDone = NO;
         _cachedBatteryLevel = -1;
         _cachedBatteryString = @"--%";
@@ -280,6 +289,7 @@ static void HIDDeviceMatchingCallback(void *context, IOReturn result, void *send
 
     self.hidDevice = device;
     self.deviceReady = YES;
+    self.edgeArmed = NO;
 
     [self registerInputReport:device];
     [self lookupChangeHost];
@@ -295,12 +305,10 @@ static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sende
         self.batteryIndex = 0;
         self.batteryLookupDone = NO;
         self.inputReportRegistered = NO;
+        self.edgeArmed = NO;
         [self.batteryTimer invalidate];
         self.batteryTimer = nil;
         fflush(stdout);
-        // NOTE: do NOT reset currentChannel or battery cache — the mouse will
-        // come back on the same channel, and we want the icon to keep showing
-        // the last known battery reading.
     }
 }
 
@@ -315,7 +323,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     printf("\n");
     fflush(stdout);
 
-    // ---- Feature index replies on feature 0x00 ----
+    // ---- Feature index replies on feature 0x00 (ROOT.getFeature) ----
     if (report[2] == 0x00) {
         uint8_t idx = report[4];
 
@@ -329,14 +337,14 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
             self.changeHostIndex = idx;
             printf("[MXFlow] ChangeHost index: 0x%02X\n", idx);
             fflush(stdout);
-            [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
+            // Now ask the device which host slot it's currently connected on.
+            [self probeHostInfo];
             return;
         }
 
         if (self.awaitingBatteryIndex) {
             self.awaitingBatteryIndex = NO;
             if (idx == 0 || idx == 0xFF) {
-                // 0x1004 not present — fall back to 0x1000
                 if (self.batteryIsUnified) {
                     printf("[MXFlow] UnifiedBattery not present, trying BatteryStatus (0x1000)\n");
                     fflush(stdout);
@@ -372,6 +380,39 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         }
     }
 
+    // ---- ChangeHost.getHostInfo reply on the ChangeHost feature index ----
+    // Confirmed layout from MX Master 3 raw capture:
+    //   byte 2 = feature index of ChangeHost (0x0A on this device)
+    //   byte 3 = fnSwid echo (0x00 | SWID)
+    //   byte 4 = total host count (always 0x03)
+    //   byte 5 = CURRENTLY CONNECTED host index (0x00 on Mac 1, 0x01 on Mac 2, ...)
+    //
+    // So we only need one probe. No slot scan.
+    if (self.awaitingHostInfo &&
+        self.changeHostIndex != 0 &&
+        report[2] == self.changeHostIndex &&
+        report[3] == (uint8_t)((FUNCTION_GET_HOST_INFO << 4) | SWID)) {
+
+        self.awaitingHostInfo = NO;
+        uint8_t count = report[4];
+        uint8_t current = report[5];
+
+        if (current > CHANNEL_MAX) {
+            printf("[MXFlow] ⚠ Device reports connected host = 0x%02X (out of range); defaulting to 0\n", current);
+            fflush(stdout);
+            self.myChannel = 0;
+        } else {
+            self.myChannel = current;
+            printf("[MXFlow] ✅ Detected this Mac as channel %d (Mac %d) — %d hosts total\n",
+                   current, current + 1, count);
+            fflush(stdout);
+        }
+
+        // Now chain the battery lookup.
+        [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
+        return;
+    }
+
     // ---- Battery value response ----
     if (self.awaitingBatteryValue &&
         self.batteryIndex != 0 &&
@@ -382,29 +423,23 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         int pct = -1;
 
         if (self.batteryIsUnified) {
-            // 0x1004: byte4 = state of charge %, byte5 = level flags,
-            // byte6 = charging status. flags bit 7 = "percentage valid".
             uint8_t flags = report[5];
             if ((flags & 0x80) && raw <= 100) {
                 pct = raw;
                 ok = YES;
             }
         } else {
-            // 0x1000: byte4 = level %, byte5 = next level %, byte6 = status.
-            // Reported levels are discrete (100/80/50/30/10/5).
             uint8_t status = report[6];
             BOOL charging = (status == 1 || status == 2 || status == 4);
             if (raw > 0 && raw <= 100) {
                 pct = raw;
                 ok = YES;
             } else if (charging && raw == 0) {
-                // invalid level while charging — keep last
                 ok = NO;
             }
         }
 
         if (ok) {
-            // Snap to nearest of {100, 80, 50, 10}
             int snapped;
             if (pct >= 90) snapped = 100;
             else if (pct >= 65) snapped = 80;
@@ -468,13 +503,38 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 }
 
+// ---- Single-shot host probe. The reply tells us which slot is live. ----
+- (void)probeHostInfo {
+    if (!self.hidDevice || self.changeHostIndex == 0) return;
+    if (self.awaitingHostInfo) return;
+
+    printf("[MXFlow] Probing connected host index...\n");
+    fflush(stdout);
+
+    self.awaitingHostInfo = YES;
+    uint8_t cmd[20] = {0};
+    cmd[0] = HIDPP_REPORT_ID_LONG;
+    cmd[1] = DEVICE_INDEX_DIRECT;
+    cmd[2] = self.changeHostIndex;
+    cmd[3] = (uint8_t)((FUNCTION_GET_HOST_INFO << 4) | SWID);
+    cmd[4] = 0x00;   // parameter is ignored; the reply carries the connected slot
+
+    IOReturn r = IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
+    if (r != kIOReturnSuccess) {
+        printf("[MXFlow] Host probe write failed: %d; defaulting to channel 0\n", r);
+        fflush(stdout);
+        self.awaitingHostInfo = NO;
+        self.myChannel = 0;
+        [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
+    }
+}
+
 - (void)lookupBattery {
     if (!self.hidDevice) return;
     if (self.batteryIndex != 0) return;
     if (self.awaitingBatteryIndex) return;
     if (self.batteryLookupDone) return;
 
-    // Try UnifiedBattery first
     self.batteryIsUnified = YES;
     printf("[MXFlow] Looking up UNIFIED_BATTERY (0x1004)\n");
     fflush(stdout);
@@ -574,11 +634,16 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 }
 
-// ---- Carousel edges ----
-// Left edge: previous channel. Right edge: next channel. Bounded 0..2.
+// ---- Edge logic (Flow style, one step per flick) ----
+// Uses myChannel (auto-detected from the mouse) for the math:
+//   Left edge  → myChannel - 1
+//   Right edge → myChannel + 1
+// On the leftmost Mac, myChannel - 1 is below CHANNEL_MIN → left does nothing.
+// On the rightmost Mac, myChannel + 1 is above CHANNEL_MAX → right does nothing.
 - (void)checkEdges {
     if (!self.running || self.switching) return;
-    if (!self.deviceReady) return;   // don't switch if the mouse isn't ours right now
+    if (!self.deviceReady) return;
+    if (self.myChannel < 0) return;   // channel not detected yet
 
     CGEventRef event = CGEventCreate(NULL);
     CGPoint p = CGEventGetLocation(event);
@@ -586,11 +651,20 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 
     CGFloat w = self.screenBounds.size.width;
 
+    CGFloat rearmDist = 40.0;
+    if (!self.edgeArmed) {
+        if (p.x > rearmDist && p.x < w - rearmDist) {
+            self.edgeArmed = YES;
+        }
+        return;
+    }
+
     if (p.x <= EDGE_THRESHOLD) {
-        int next = self.currentChannel - 1;
+        int next = self.myChannel - 1;
         if (next >= CHANNEL_MIN) {
-            printf("[MXFlow] LEFT edge -> channel %d\n", next + 1);
+            printf("[MXFlow] LEFT edge -> channel %d (Mac %d)\n", next, next + 1);
             fflush(stdout);
+            self.edgeArmed = NO;
             [self switchToChannelDirect:next];
             [self warpMouse:p.x + 20 y:p.y];
         }
@@ -598,10 +672,11 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 
     if (p.x >= w - EDGE_THRESHOLD) {
-        int next = self.currentChannel + 1;
+        int next = self.myChannel + 1;
         if (next <= CHANNEL_MAX) {
-            printf("[MXFlow] RIGHT edge -> channel %d\n", next + 1);
+            printf("[MXFlow] RIGHT edge -> channel %d (Mac %d)\n", next, next + 1);
             fflush(stdout);
+            self.edgeArmed = NO;
             [self switchToChannelDirect:next];
             [self warpMouse:p.x - 20 y:p.y];
         }
@@ -653,10 +728,8 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     if (!self.running) return;
     if (channel < CHANNEL_MIN || channel > CHANNEL_MAX) return;
     [self switchToChannel:channel];
-    self.currentChannel = channel;
 }
 
-// ---- Battery accessors: return cache when live value is unavailable ----
 - (int)batteryLevel {
     if (_batteryLevel >= 0) return _batteryLevel;
     return self.cachedBatteryLevel;
@@ -897,22 +970,17 @@ else
     exit 1
 fi
 
-# ---- Sign with a stable identity if available ----
 if security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
     echo -e "${CYAN}🔏 Signing with $SIGN_IDENTITY${NC}"
     codesign --force --deep --sign "$SIGN_IDENTITY" \
              --identifier "$BUNDLE_ID" \
              --options runtime \
              "$APP_BUNDLE" 2>/dev/null || {
-        echo -e "${YELLOW}⚠ Signing with $SIGN_IDENTITY failed, falling back to ad-hoc${NC}"
+        echo -e "${YELLOW}⚠ Signing failed, falling back to ad-hoc${NC}"
         codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP_BUNDLE" 2>/dev/null || true
     }
 else
     echo -e "${YELLOW}⚠ Self-signed cert '$SIGN_IDENTITY' not found — using ad-hoc.${NC}"
-    echo -e "${YELLOW}  Input Monitoring permission will reset on every rebuild.${NC}"
-    echo -e "${YELLOW}  To fix once and for all:${NC}"
-    echo -e "${YELLOW}    Keychain Access → Certificate Assistant → Create a Certificate…${NC}"
-    echo -e "${YELLOW}    Name: $SIGN_IDENTITY  Type: Code Signing  Self-signed${NC}"
     codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP_BUNDLE" 2>/dev/null || true
 fi
 xattr -cr "$APP_BUNDLE"
@@ -923,16 +991,8 @@ cp -R "$APP_BUNDLE" "$HOME/Applications/"
 
 echo -e "\n${GREEN}✅ Built and installed to ~/Applications${NC}"
 echo ""
-echo "Edges (carousel):"
-echo "  LEFT  edge → previous channel"
-echo "  RIGHT edge → next channel"
-echo ""
-echo "Top button:"
-echo "  1 click  → channel 1"
-echo "  2 clicks → channel 2"
-echo "  3 clicks → channel 3 (fires instantly)"
-echo ""
-echo "Battery: 100% / 80% / 50% / 10% (last value cached across switches)"
+echo "Same binary on every Mac — no per-machine config."
+echo "On connect, the app asks the mouse which host slot is live."
 echo ""
 
 open "$HOME/Applications/$APP_BUNDLE"
@@ -942,16 +1002,17 @@ echo -e "${CYAN}"
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║                    WHAT THIS VERSION DOES                    ║"
 echo "╠════════════════════════════════════════════════════════════════╣"
-echo "║ 1. ✅ Battery: real percentage, no more fake 1%              ║"
-echo "║ 2. ✅ Debounced top button (50ms)                            ║"
-echo "║ 3. ✅ Wider click window (600ms / 700ms timer)               ║"
-echo "║ 4. ✅ Only HID++ 0x11 frames logged (no 0x02 spam)           ║"
-echo "║ 5. ✅ Discovery states for host + battery feature indexes    ║"
+echo "║ 1. ✅ Battery: 100/80/50/10, cached across channel switches  ║"
+echo "║ 2. ✅ Top button: 1/2/3 clicks → direct channel jump         ║"
+echo "║ 3. ✅ Edges: one step per flick, uses CHANNEL_HOME not stale ║"
+echo "║ 4. ✅ Edge re-arms only when mouse actually leaves this Mac  ║"
+echo "║ 5. ✅ ChangeHost + battery feature discovery, no retry spam  ║"
+echo "║ 6. ✅ Stable signing (MXFlowLocal) if cert exists            ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 echo "⚠️  Grant Input Monitoring permission:"
 echo "   System Settings → Privacy & Security → Input Monitoring"
-echo "   Add your Terminal or the app, toggle ON"
+echo "   Add ~/Applications/$APP_NAME.app, toggle ON"
 echo -e "${NC}"
 
 # 🎯 What You've Achieved

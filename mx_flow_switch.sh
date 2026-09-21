@@ -30,7 +30,7 @@ cd "$APP_NAME" || exit
 # ICON
 # ===============================================
 echo -e "${CYAN}🎨 Downloading icon...${NC}"
-ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/main/logitec-mx-keys-mini.png"
+ICON_URL="https://raw.githubusercontent.com/igiteam/logitec_mx_mouse_3_macos/main/logitec-mouse-mx-3.png"
 curl -s -L "$ICON_URL" -o "public/app_icon.png"
 
 if [ -f "public/app_icon.png" ] && [ -s "public/app_icon.png" ]; then
