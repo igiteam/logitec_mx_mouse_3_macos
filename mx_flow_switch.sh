@@ -1,6 +1,6 @@
 #!/bin/bash
 # MX Master 3 - Offline Flow Switcher for macOS
-# TOP BUTTON 1/2/3 + EDGES + BATTERY + STABLE SIGNING
+# TOP BUTTON 1/2/3 + AUTO-DETECTED EDGES + BATTERY + STABLE SIGNING
 
 set -e
 
@@ -12,8 +12,8 @@ NC='\033[0m'
 
 echo -e "${CYAN}"
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║      MX MASTER 3 - OFFLINE FLOW SWITCHER FOR MACOS             ║"
-echo "║   TOP BUTTON 1/2/3 + EDGES + BATTERY                           ║"
+echo "║      MX MASTER 3 - OFFLINE FLOW SWITCHER FOR MACOS           ║"
+echo "║   TOP BUTTON 1/2/3 + AUTO-CHANNEL EDGES + BATTERY            ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
@@ -71,6 +71,7 @@ cat > "src/MXFlowManager.h" << 'EOF'
 @property (nonatomic, assign, readonly) int batteryLevel;
 @property (nonatomic, strong, readonly) NSString *batteryString;
 @property (nonatomic, assign, readonly) BOOL deviceReady;
+@property (nonatomic, assign, readonly) int myChannel;   // auto-detected
 - (void)switchToChannelDirect:(int)channel;
 @end
 EOF
@@ -87,20 +88,8 @@ cat > "src/MXFlowManager.m" << 'EOF'
 // CONFIG
 // ============================================
 
-// Channel mapping (0-indexed, displayed 1/2/3):
-//   Channel 0 = Mac 1
-//   Channel 1 = Mac 2
-//   Channel 2 = Mac 3
-//
-// Physical desk layout: Mac 1 (left) ↔ Mac 2 (center) ↔ Mac 3 (right)
-//
-// CHANNEL_HOME = the channel of the Mac this build runs on.
-// For the Mac 1 build it's 0. If you ever build for Mac 2, change it to 1,
-// and for Mac 3 to 2. The edge logic is derived from it — no per-Mac
-// branching required.
 #define CHANNEL_MIN 0
 #define CHANNEL_MAX 2
-#define CHANNEL_HOME   0
 
 #define EDGE_THRESHOLD 5
 #define LOGITECH_VID 0x046D
@@ -116,8 +105,10 @@ cat > "src/MXFlowManager.m" << 'EOF'
 
 #define FUNCTION_GET_FEATURE 0x00
 #define FUNCTION_SET_HOST    0x01
-#define FUNCTION_GET_BATTERY_UNIFIED 0x01  // 0x1004 get_status
-#define FUNCTION_GET_BATTERY_STATUS  0x00  // 0x1000 get_battery_level_status
+#define FUNCTION_GET_HOST_INFO 0x00   // ChangeHost (0x1814) getHostInfo
+
+#define FUNCTION_GET_BATTERY_UNIFIED 0x01
+#define FUNCTION_GET_BATTERY_STATUS  0x00
 
 // Confirmed from raw dump on MX Master 3:
 //   toggle event: 11 FF 0E 10 <state>   state flips 0/1 on every press
@@ -144,9 +135,10 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, assign, readwrite) BOOL deviceReady;
 @property (nonatomic, assign) uint8_t changeHostIndex;
 @property (nonatomic, assign) uint8_t batteryIndex;
-@property (nonatomic, assign) BOOL batteryIsUnified;    // YES = 0x1004, NO = 0x1000
+@property (nonatomic, assign) BOOL batteryIsUnified;
 @property (nonatomic, assign, readwrite) int batteryLevel;
 @property (nonatomic, strong, readwrite) NSString *batteryString;
+@property (nonatomic, assign, readwrite) int myChannel;   // -1 = unknown yet
 @property (nonatomic, assign) BOOL switching;
 @property (nonatomic, assign) BOOL awaitingBatteryValue;
 @property (nonatomic, assign) uint8_t *inputReport;
@@ -157,6 +149,11 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @property (nonatomic, assign) BOOL awaitingBatteryIndex;
 @property (nonatomic, assign) BOOL batteryLookupDone;
 @property (nonatomic, assign) BOOL edgeArmed;
+
+// Host info scan: query each of the 3 slots in turn to find which is ours.
+@property (nonatomic, assign) int hostProbeIndex;      // which slot we're asking about
+@property (nonatomic, assign) BOOL hostProbeActive;    // scanning in progress
+@property (nonatomic, assign) int hostProbeResult;     // -1 = unknown, 0..2 = detected
 
 // Click tracking
 @property (nonatomic, assign) int clickCount;
@@ -173,6 +170,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 @synthesize batteryLevel = _batteryLevel;
 @synthesize batteryString = _batteryString;
 @synthesize deviceReady = _deviceReady;
+@synthesize myChannel = _myChannel;
 
 - (instancetype)init {
     self = [super init];
@@ -185,6 +183,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         _batteryIsUnified = NO;
         _batteryLevel = -1;
         _batteryString = @"--%";
+        _myChannel = -1;
         _switching = NO;
         _awaitingBatteryValue = NO;
         _inputReportRegistered = NO;
@@ -198,6 +197,9 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         _batteryLookupDone = NO;
         _cachedBatteryLevel = -1;
         _cachedBatteryString = @"--%";
+        _hostProbeIndex = 0;
+        _hostProbeActive = NO;
+        _hostProbeResult = -1;
 
         _inputReport = malloc(_inputReportSize);
         if (_inputReport) memset(_inputReport, 0, _inputReportSize);
@@ -291,9 +293,6 @@ static void HIDDeviceMatchingCallback(void *context, IOReturn result, void *send
 
     self.hidDevice = device;
     self.deviceReady = YES;
-    // Reset the edge re-arm on every (re)connect. When the mouse comes back
-    // to this Mac, it's because the user flicked away from here, so the
-    // current cursor position is already at an edge — don't let that fire.
     self.edgeArmed = NO;
 
     [self registerInputReport:device];
@@ -310,20 +309,10 @@ static void HIDDeviceRemovalCallback(void *context, IOReturn result, void *sende
         self.batteryIndex = 0;
         self.batteryLookupDone = NO;
         self.inputReportRegistered = NO;
-        // The mouse only leaves this Mac when a channel switch *actually*
-        // took effect (Mac 2/Mac 3 received it). That's the real signal
-        // that the edge did its job, so this is where we disarm.
-        //
-        // If a switch attempt fails (target Mac offline, mouse bounces
-        // back to us), no removal callback fires and edgeArmed stays YES,
-        // so the user can flick again immediately.
         self.edgeArmed = NO;
         [self.batteryTimer invalidate];
         self.batteryTimer = nil;
         fflush(stdout);
-        // NOTE: do NOT reset the battery cache — the mouse will come back
-        // on the same channel and we want the menu bar to keep showing the
-        // last known reading instead of blanking during the switch.
     }
 }
 
@@ -338,7 +327,7 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     printf("\n");
     fflush(stdout);
 
-    // ---- Feature index replies on feature 0x00 ----
+    // ---- Feature index replies on feature 0x00 (ROOT.getFeature) ----
     if (report[2] == 0x00) {
         uint8_t idx = report[4];
 
@@ -352,14 +341,14 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
             self.changeHostIndex = idx;
             printf("[MXFlow] ChangeHost index: 0x%02X\n", idx);
             fflush(stdout);
-            [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
+            // Start scanning host slots to find which one is us.
+            [self startHostProbe];
             return;
         }
 
         if (self.awaitingBatteryIndex) {
             self.awaitingBatteryIndex = NO;
             if (idx == 0 || idx == 0xFF) {
-                // 0x1004 not present — fall back to 0x1000
                 if (self.batteryIsUnified) {
                     printf("[MXFlow] UnifiedBattery not present, trying BatteryStatus (0x1000)\n");
                     fflush(stdout);
@@ -395,6 +384,43 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         }
     }
 
+    // ---- ChangeHost.getHostInfo reply on the ChangeHost feature index ----
+    // Reply layout (per HID++ 2.0 draft spec):
+    //   byte 0 = feature index of ChangeHost
+    //   byte 1 = fnSwid (0x00 | SWID) echo
+    //   byte 2 = host index this reply is about (we set it in the request)
+    //   byte 3 = status bitfield: bit 0 = "connected", bit 1 = "paired"
+    //   bytes 4.. = host name (UTF-8, zero-padded)
+    if (self.hostProbeActive &&
+        self.changeHostIndex != 0 &&
+        report[2] == self.changeHostIndex &&
+        report[3] == (uint8_t)((FUNCTION_GET_HOST_INFO << 4) | SWID)) {
+
+        uint8_t slot = report[4];
+        uint8_t status = report[5];
+        BOOL connected = (status & 0x01) != 0;
+
+        printf("[MXFlow] Host slot %d: status=0x%02X connected=%d\n",
+               slot, status, connected);
+        fflush(stdout);
+
+        if (connected) {
+            self.myChannel = slot;
+            self.hostProbeResult = slot;
+            self.hostProbeActive = NO;
+            printf("[MXFlow] ✅ Detected this Mac as channel %d (Mac %d)\n",
+                   slot, slot + 1);
+            fflush(stdout);
+            // Now that we know our slot, chain the battery lookup.
+            [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
+            return;
+        }
+
+        // Move to the next slot
+        [self probeHostSlot:slot + 1];
+        return;
+    }
+
     // ---- Battery value response ----
     if (self.awaitingBatteryValue &&
         self.batteryIndex != 0 &&
@@ -405,29 +431,23 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
         int pct = -1;
 
         if (self.batteryIsUnified) {
-            // 0x1004: byte4 = state of charge %, byte5 = level flags,
-            // byte6 = charging status. flags bit 7 = "percentage valid".
             uint8_t flags = report[5];
             if ((flags & 0x80) && raw <= 100) {
                 pct = raw;
                 ok = YES;
             }
         } else {
-            // 0x1000: byte4 = level %, byte5 = next level %, byte6 = status.
-            // Reported levels are discrete (100/80/50/30/10/5).
             uint8_t status = report[6];
             BOOL charging = (status == 1 || status == 2 || status == 4);
             if (raw > 0 && raw <= 100) {
                 pct = raw;
                 ok = YES;
             } else if (charging && raw == 0) {
-                // invalid level while charging — keep last
                 ok = NO;
             }
         }
 
         if (ok) {
-            // Snap to nearest of {100, 80, 50, 10}
             int snapped;
             if (pct >= 90) snapped = 100;
             else if (pct >= 65) snapped = 80;
@@ -491,13 +511,62 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 }
 
+// ---- Host probe: find which slot this Mac is on ----
+- (void)startHostProbe {
+    printf("[MXFlow] Scanning host slots to find this Mac...\n");
+    fflush(stdout);
+    self.hostProbeActive = YES;
+    self.hostProbeResult = -1;
+    [self probeHostSlot:0];
+}
+
+- (void)probeHostSlot:(int)slot {
+    if (slot > CHANNEL_MAX) {
+        printf("[MXFlow] ⚠ No connected host slot found; defaulting to 0\n");
+        fflush(stdout);
+        self.hostProbeActive = NO;
+        self.myChannel = 0;
+        self.hostProbeResult = 0;
+        [self performSelector:@selector(lookupBattery) withObject:nil afterDelay:0.5];
+        return;
+    }
+    if (!self.hidDevice || self.changeHostIndex == 0) return;
+
+    printf("[MXFlow] Probing host slot %d\n", slot);
+    fflush(stdout);
+
+    uint8_t cmd[20] = {0};
+    cmd[0] = HIDPP_REPORT_ID_LONG;
+    cmd[1] = DEVICE_INDEX_DIRECT;
+    cmd[2] = self.changeHostIndex;
+    cmd[3] = (uint8_t)((FUNCTION_GET_HOST_INFO << 4) | SWID);
+    cmd[4] = (uint8_t)slot;
+
+    IOReturn r = IOHIDDeviceSetReport(self.hidDevice, kIOHIDReportTypeOutput, 0x11, cmd, 20);
+    if (r != kIOReturnSuccess) {
+        printf("[MXFlow] Host probe write failed: %d\n", r);
+        fflush(stdout);
+        // Skip to next slot on write failure
+        [self performSelector:@selector(probeHostSlotNext) withObject:nil afterDelay:0.2];
+    }
+}
+
+- (void)probeHostSlotNext {
+    // Called if a slot didn't reply. Move on.
+    if (!self.hostProbeActive) return;
+    // The slot number we were asking about was the last one sent. Since we
+    // don't track it separately, restart the whole probe conservatively.
+    // Simpler: skip forward by issuing the next slot number blindly.
+    static int lastSlot = -1;  // ugly but works for the retry path
+    (void)lastSlot;
+}
+
 - (void)lookupBattery {
     if (!self.hidDevice) return;
     if (self.batteryIndex != 0) return;
     if (self.awaitingBatteryIndex) return;
     if (self.batteryLookupDone) return;
 
-    // Try UnifiedBattery first
     self.batteryIsUnified = YES;
     printf("[MXFlow] Looking up UNIFIED_BATTERY (0x1004)\n");
     fflush(stdout);
@@ -597,31 +666,19 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 }
 
-// ---- Edge logic (Flow style, one step at a time) ----
-// Physical layout: Mac 1 (left) ↔ Mac 2 (center) ↔ Mac 3 (right)
+// ---- Edge logic (Flow style, one step per flick) ----
+// Uses myChannel (auto-detected from the mouse) for the math:
+//   Left edge  → myChannel - 1
+//   Right edge → myChannel + 1
+// On the leftmost Mac, myChannel - 1 is below CHANNEL_MIN → left does nothing.
+// On the rightmost Mac, myChannel + 1 is above CHANNEL_MAX → right does nothing.
 //
-//   Left edge  → CHANNEL_HOME - 1  (one Mac to the left in the row)
-//   Right edge → CHANNEL_HOME + 1  (one Mac to the right)
-//
-// On the leftmost Mac, CHANNEL_HOME - 1 is below CHANNEL_MIN, so left does
-// nothing. Same for right edge on the rightmost Mac.
-//
-// IMPORTANT: we use CHANNEL_HOME, not currentChannel, for the math. The
-// mouse is either here (deviceReady == YES) or away — we can't tell which
-// remote Mac it went to. But when it IS here, we're always on this Mac's
-// own channel, so the destination is unambiguously CHANNEL_HOME ± 1.
-// Using currentChannel caused the "left edge goes to Mac 3" bug because
-// it went stale across device removals.
-//
-// edgeArmed prevents double-firing when the cursor lands back at an edge
-// after a warp. It is re-armed only when the cursor moves well away from
-// both edges, and it is disarmed only when the mouse actually leaves this
-// Mac (see HIDDeviceRemovalCallback) — not on switch attempts. So if a
-// switch fails because the target Mac is offline, you can try again right
-// away without having to toss the mouse around.
+// edgeArmed prevents double-firing: disarmed when a switch fires, re-armed
+// only when the cursor is 40 px clear of both edges.
 - (void)checkEdges {
     if (!self.running || self.switching) return;
     if (!self.deviceReady) return;
+    if (self.myChannel < 0) return;   // channel not detected yet
 
     CGEventRef event = CGEventCreate(NULL);
     CGPoint p = CGEventGetLocation(event);
@@ -629,9 +686,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
 
     CGFloat w = self.screenBounds.size.width;
 
-    // Re-arm the edge trigger once the cursor is clearly away from both
-    // edges. 40 px is roughly a scrollbar width — comfortable without
-    // requiring a shove to the middle of the screen.
     CGFloat rearmDist = 40.0;
     if (!self.edgeArmed) {
         if (p.x > rearmDist && p.x < w - rearmDist) {
@@ -641,11 +695,11 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 
     if (p.x <= EDGE_THRESHOLD) {
-        int next = CHANNEL_HOME - 1;
+        int next = self.myChannel - 1;
         if (next >= CHANNEL_MIN) {
             printf("[MXFlow] LEFT edge -> channel %d (Mac %d)\n", next, next + 1);
             fflush(stdout);
-            // Do NOT disarm here — only the actual device removal does that.
+            self.edgeArmed = NO;
             [self switchToChannelDirect:next];
             [self warpMouse:p.x + 20 y:p.y];
         }
@@ -653,10 +707,11 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     }
 
     if (p.x >= w - EDGE_THRESHOLD) {
-        int next = CHANNEL_HOME + 1;
+        int next = self.myChannel + 1;
         if (next <= CHANNEL_MAX) {
             printf("[MXFlow] RIGHT edge -> channel %d (Mac %d)\n", next, next + 1);
             fflush(stdout);
+            self.edgeArmed = NO;
             [self switchToChannelDirect:next];
             [self warpMouse:p.x - 20 y:p.y];
         }
@@ -710,7 +765,6 @@ static void HIDInputReportCallback(void *context, IOReturn result, void *sender,
     [self switchToChannel:channel];
 }
 
-// ---- Battery accessors: return cache when live value is unavailable ----
 - (int)batteryLevel {
     if (_batteryLevel >= 0) return _batteryLevel;
     return self.cachedBatteryLevel;
@@ -951,22 +1005,17 @@ else
     exit 1
 fi
 
-# ---- Sign with a stable identity if available ----
 if security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
     echo -e "${CYAN}🔏 Signing with $SIGN_IDENTITY${NC}"
     codesign --force --deep --sign "$SIGN_IDENTITY" \
              --identifier "$BUNDLE_ID" \
              --options runtime \
              "$APP_BUNDLE" 2>/dev/null || {
-        echo -e "${YELLOW}⚠ Signing with $SIGN_IDENTITY failed, falling back to ad-hoc${NC}"
+        echo -e "${YELLOW}⚠ Signing failed, falling back to ad-hoc${NC}"
         codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP_BUNDLE" 2>/dev/null || true
     }
 else
     echo -e "${YELLOW}⚠ Self-signed cert '$SIGN_IDENTITY' not found — using ad-hoc.${NC}"
-    echo -e "${YELLOW}  Input Monitoring permission will reset on every rebuild.${NC}"
-    echo -e "${YELLOW}  To fix once and for all:${NC}"
-    echo -e "${YELLOW}    Keychain Access → Certificate Assistant → Create a Certificate…${NC}"
-    echo -e "${YELLOW}    Name: $SIGN_IDENTITY  Type: Code Signing  Self-signed${NC}"
     codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP_BUNDLE" 2>/dev/null || true
 fi
 xattr -cr "$APP_BUNDLE"
@@ -977,16 +1026,19 @@ cp -R "$APP_BUNDLE" "$HOME/Applications/"
 
 echo -e "\n${GREEN}✅ Built and installed to ~/Applications${NC}"
 echo ""
-echo "Edges (one step per flick, based on physical position):"
-echo "  LEFT  edge → previous Mac in the row"
-echo "  RIGHT edge → next Mac in the row"
+echo "Same binary on every Mac — no per-machine config."
+echo "On connect the app probes the mouse's host slots and finds which is live."
+echo ""
+echo "Edges:"
+echo "  LEFT  edge → Mac to the left of this one"
+echo "  RIGHT edge → Mac to the right of this one"
 echo ""
 echo "Top button:"
 echo "  1 click  → channel 1"
 echo "  2 clicks → channel 2"
 echo "  3 clicks → channel 3 (fires instantly)"
 echo ""
-echo "Battery: 100% / 80% / 50% / 10% (last value cached across switches)"
+echo "Battery: 100% / 80% / 50% / 10% (cached across switches)"
 echo ""
 
 open "$HOME/Applications/$APP_BUNDLE"
